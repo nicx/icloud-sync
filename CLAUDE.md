@@ -347,3 +347,23 @@ readonly/PEEK/UIDVALIDITY/Move/Auth-Fehler, Engine-Resilienz.
 - [x] Periodischer Scheduler (konfigurierbar, Default 4 h) mit Missed-Run-Catch-up
 - [x] „Sync jetzt"-Button, Live-Status/Fortschritt pro User
 - [x] README: Build, Ad-hoc-Signing, Gatekeeper, Mount-Voraussetzung
+
+## Offene Punkte / Nächste Schritte (Stand zum Session-Wechsel)
+
+Noch **nicht gegen einen echten Account** verifiziert (Logik nur mock-getestet, Fallstrick #7
+— die pyicloud-Objekt-Shapes können abweichen; im Zweifel ein echtes Beispiel-Response prüfen):
+
+- **Geteilte Mediathek** (`sync_shared_photos` → `SharedPhotos/`, `photos._shared_album_sources`):
+  liefert `api.photos.libraries` die `SharedSync-`-Zone? Hat die Shared-`PhotoLibrary`
+  `asset_type=PhotoAsset`? Lädt `lib.all` + `api.session.get` die Shared-Assets?
+- **Drive-Ordnerliste-Fetch** (`session.list_drive_top_level`): zeigt „Ordnerliste aktualisieren"
+  die obersten Ordner korrekt? (für die Drive-Ausschluss-Häkchen).
+- **Contacts-vCard** (`sync/contacts._vcard`): Feld-Mapping gegen echte `api.contacts.all`-Dicts
+  prüfen; JSON ist verlustfrei, vCard ggf. nachschärfen. Foto/Apple-Extensions bewusst nur im JSON.
+
+Deployment/Betrieb (kein Code):
+- **Stabile Signatur**: self-signed Zert anlegen, mit `CODESIGN_IDENTITY=…` bauen → keine
+  wiederkehrenden Keychain-Prompts mehr (Fallstrick #4).
+- **/Applications + Autostart**: App nach `/Applications` kopieren, von dort starten, „Beim Login
+  starten" aus dieser Instanz togglen (LaunchAgent-Pfad zeigt sonst auf `dist/`).
+- **Reboot-Verhalten** nach Start-Gnadenfrist/Offline-Erkennung im Feld beobachten.
