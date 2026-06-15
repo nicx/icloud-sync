@@ -185,7 +185,25 @@ codesign --force --deep --sign - "dist/iCloud Sync.app"
 ```
 
 Das Bundle ist eine reine **Menüleisten-App** (`LSUIElement` → kein Dock-Icon), Bundle-ID
-`de.nicx.icloud-sync`. Es ist **ad-hoc signiert** (kein Apple-Developer-Zertifikat).
+`de.nicx.icloud-sync`. Standardmäßig **ad-hoc signiert** (kein Apple-Developer-Zertifikat).
+
+### Wiederkehrende Schlüsselbund-Abfragen vermeiden (stabile Signatur)
+
+Ad-hoc-Signaturen haben **keine stabile Code-Identität** → nach **jedem Update** fragt macOS
+erneut nach dem Schlüsselbund (pro Account je `icloud-sync` und `icloud-sync-mail`); „Immer
+erlauben" hält nur bis zum nächsten Build. Abhilfe: mit **derselben** Identität signieren.
+
+1. Einmalig ein **self-signed Code-Signing-Zertifikat** anlegen: *Schlüsselbundverwaltung →
+   Menü „Zertifikatsassistent" → „Zertifikat erstellen…"*, Name z. B. `iCloud Sync Selfsign`,
+   Identitätstyp „Selbstsigniertes Stammzertifikat", **Zertifikatstyp „Codesignatur"**.
+2. Bauen mit dieser Identität:
+   ```bash
+   CODESIGN_IDENTITY="iCloud Sync Selfsign" bash build/build.sh
+   ```
+   Danach App starten und bei der Schlüsselbund-Abfrage **„Immer erlauben"** wählen — das hält
+   nun auch über künftige Updates (solange mit demselben Zertifikat signiert wird).
+
+Ohne `CODESIGN_IDENTITY` wird weiterhin ad-hoc signiert (und bei jedem Update neu gefragt).
 
 > `pyicloud` ist bewusst auf eine feste Version gepinnt; ein Upgrade nur gezielt durchführen
 > und danach einen echten Account-Smoke-Test machen (die Tests sind mock-basiert) — Details
@@ -203,7 +221,9 @@ Eigengebrauch:
   xattr -dr com.apple.quarantine "dist/iCloud Sync.app"
   ```
 
-> Die Ad-hoc-Signierung mit stabiler Bundle-ID mildert auch wiederholte Keychain-Freigabe-Prompts.
+> Hinweis: Ad-hoc-Signierung **vermeidet die wiederkehrenden Keychain-Abfragen nicht** — dafür
+> braucht es eine stabile Signatur-Identität (siehe „Wiederkehrende Schlüsselbund-Abfragen
+> vermeiden" oben).
 
 ### Autostart beim Login
 

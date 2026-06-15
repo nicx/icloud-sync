@@ -275,7 +275,10 @@ ggf. erneutes Setzen der Passwörter.
 2. **Apple-Throttling** – exponentielles Backoff (`util.with_retries`), Retry-Limit.
 3. **Gatekeeper/Quarantäne** – unsigniertes/ad-hoc-signiertes `.app` → README:
    Rechtsklick→Öffnen bzw. `xattr -dr com.apple.quarantine`.
-4. **Keychain-Prompts** – durch Ad-hoc-Codesigning mit stabiler Identität gemildert.
+4. **Keychain-Prompts bei Updates** – **Ad-hoc-Signierung ist die Ursache**: keine stabile
+   Code-Identität ⇒ nach jedem Build passt die Keychain-ACL nicht mehr ⇒ erneute Abfrage (pro
+   Account `icloud-sync` + `icloud-sync-mail`). Abhilfe: mit stabiler (self-signed) Identität
+   signieren via `CODESIGN_IDENTITY` (siehe Verpackung/README); dann hält „Immer erlauben".
 5. **UNAS-Mount fehlt** – `engine.is_mount_available` prüft vor dem Sync; sonst sauberer
    Abbruch + Notification, kein Crash.
 5b. **Netz nach Reboot noch nicht oben** – Autostart + sofort feuernder rumps-Timer würden
@@ -319,7 +322,9 @@ py2app, Entrypoint `launcher.py`:
 - `iconfile` = `build/icon.icns` (falls vorhanden)
 - Sonderfall eingebaut: `charset_normalizer`-mypyc-`.so` wird explizit ins Bundle kopiert
 - Login-Autostart als In-App-Toggle (LaunchAgent, nur im gebauten Bundle wirksam)
-- Build-Befehl + Ad-hoc-Signierung in README dokumentiert
+- `build/build.sh` signiert mit `CODESIGN_IDENTITY` (Default `-` = ad-hoc); stabile
+  (self-signed) Identität setzen, um wiederkehrende Keychain-Abfragen zu vermeiden (Fallstrick #4)
+- Build-Befehl + Signierung in README dokumentiert
 
 ## Tests
 
