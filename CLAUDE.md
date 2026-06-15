@@ -18,6 +18,7 @@ mehrerer Accounts:
 - **iCloud Drive** (Dokumente)
 - **iCloud Photos** (Originale, inkl. Live Photos)
 - **iCloud Mail** (IMAP, rohe `.eml` je Ordner)
+- **iCloud Contacts** (vCard `.vcf` + verlustfreies Roh-`.json` je Kontakt)
 
 Ziel-Speicher: **UNAS Pro** (gemountetes Netzlaufwerk, Pfad pro User konfigurierbar).
 
@@ -121,6 +122,7 @@ icloud-sync/
       drive.py             # iCloud Drive – Datei-Spiegel
       photos.py            # iCloud Photos – Datei-Spiegel (Originale + Live-Video)
       mail.py              # iCloud Mail – IMAP-Datei-Spiegel (.eml)
+      contacts.py          # iCloud Contacts – vCard + Roh-JSON je Kontakt
       util.py              # geteilte Helfer: Pfad-Hygiene, Retry/Backoff, Streaming, prune
   build/
     setup.py               # py2app-Config (LSUIElement, Icon, Bundle-ID de.nicx.icloud-sync)
@@ -134,13 +136,13 @@ icloud-sync/
 Pro User (`User`-Dataclass, persistiert als `users.json` in App Support):
 
 - `apple_id` (E-Mail) — eindeutiger Schlüssel
-- `sync_drive`, `sync_photos` (Default an), `sync_mail` (Default **aus** — braucht
-  app-spezifisches Passwort)
+- `sync_drive`, `sync_photos` (Default an), `sync_contacts` (Default **aus** — Web-Session,
+  kein Extra-Passwort), `sync_mail` (Default **aus** — braucht app-spezifisches Passwort)
 - `sync_shared_photos` (Default **aus**): zusätzlich die **geteilte Mediathek** nach
   `SharedPhotos/` sichern (Add-on zu `sync_photos`). Pro geteilter Bibliothek sollte nur **ein**
   Account das aktivieren (Paare teilen sich dieselbe → sonst doppelt). Toggle im User-Untermenü.
 - `dest_base_path` — Ziel-Basispfad auf dem (gemounteten) Volume; darunter legt die
-  Engine `Drive/`, `Photos/`, `Mail/` an
+  Engine `Drive/`, `Photos/`, `Contacts/`, `Mail/` an
 - `drive_excludes` (Default leer): Drive-Ordner (rel. Pfade), die **nicht** gesichert werden —
   z. B. mit mir geteilte Ordner auf dem Collaborator-Account. Ausgeschlossenes wird vom
   Spiegel-Prune **lokal entfernt**. Auswahl im Menü „Drive-Ausschlüsse" (Live-Ordnerliste +
@@ -202,6 +204,13 @@ lokal zurückgesetzt und neu geladen. Login probiert Apple-ID und Lokalteil. Der
 zusätzlich `INTERNALDATE` (Server-Empfangszeit) und setzt sie via `util.set_mtime` als
 **Änderungs- und Erstellungsdatum** der `.eml` — die Finder-Spalten zeigen so das Empfangs-,
 nicht das Download-Datum (Dateiname/Schema unverändert `<uid>.eml`).
+
+**Contacts** (`sync/contacts.py`): `api.contacts.all` (rohe Kontakt-Dicts) → je Kontakt
+`Contacts/<name>_<kurz-id>.vcf` **und** `…_.json`. Die **vCard 3.0** bildet die Standardfelder
+defensiv ab (importierbar); das **Roh-JSON** ist die **verlustfreie** Quelle (Apple-Extensions,
+Gruppen, Foto). Änderungserkennung über Inhaltsvergleich (`_write_if_changed`); `kurz-id` =
+SHA1 der `contactId`. **Guard:** `None`/Fehler ⇒ kein Prune; **leere** Liste ⇒ ebenfalls kein
+Prune (Schutz vor Massenlöschen). Web-Session (kein Extra-Passwort).
 
 **Retry/Backoff** (`util.with_retries`): exponentielles Backoff (Default 4 Versuche, ab
 2 s) nur bei retrybaren Fehlern (HTTP 429/5xx, „throttl/rate limit/timeout"). Apple nicht
@@ -315,7 +324,7 @@ py2app, Entrypoint `launcher.py`:
 ## Tests
 
 `tests/test_sync.py` — eigenständiges, mock-basiertes Skript (kein Netz, kein Account;
-`HOME` zeigt auf ein Temp-Verzeichnis). Deckt ab: Drive/Photos/Mail inkrementell + Skip
+`HOME` zeigt auf ein Temp-Verzeichnis). Deckt ab: Drive/Photos/Mail/Contacts inkrementell + Skip
 im 2. Lauf, Spiegel-Löschen, alle Lösch-Guards, Photos-Kollision + Live, Mail
 readonly/PEEK/UIDVALIDITY/Move/Auth-Fehler, Engine-Resilienz.
 
@@ -329,7 +338,7 @@ readonly/PEEK/UIDVALIDITY/Move/Auth-Fehler, Engine-Resilienz.
 - [x] User anlegen/konfigurieren/löschen, Credentials im Keychain (Web + Mail)
 - [x] pyicloud-Login inkl. 2FA-Erstauth pro User
 - [x] Re-Auth-Erkennung + Notification + Re-Auth-Flow im UI
-- [x] Drive/Photos/Mail als Datei-Spiegel auf UNAS Pro (resumebar, geguarded)
+- [x] Drive/Photos/Mail/Contacts als Datei-Spiegel auf UNAS Pro (resumebar, geguarded)
 - [x] Periodischer Scheduler (konfigurierbar, Default 4 h) mit Missed-Run-Catch-up
 - [x] „Sync jetzt"-Button, Live-Status/Fortschritt pro User
 - [x] README: Build, Ad-hoc-Signing, Gatekeeper, Mount-Voraussetzung

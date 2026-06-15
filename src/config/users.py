@@ -40,6 +40,7 @@ class User:
     :param sync_photos: iCloud Photos (persönliche Mediathek) sichern?
     :param sync_shared_photos: zusätzlich die geteilte Mediathek sichern (nur mit sync_photos;
         Default aus — pro geteilter Bibliothek sollte nur EIN Account sichern).
+    :param sync_contacts: iCloud Contacts sichern (vCard + Roh-JSON)? Default aus.
     :param sync_mail: iCloud Mail (IMAP) sichern? Default aus (braucht app-spezifisches Passwort).
     :param dest_base_path: Ziel-Basispfad auf dem (gemounteten) Volume.
     :param drive_excludes: Drive-relative Ordner (z. B. geteilte), die NICHT gesichert werden —
@@ -52,6 +53,7 @@ class User:
     sync_drive: bool = True
     sync_photos: bool = True
     sync_shared_photos: bool = False  # geteilte iCloud-Mediathek (Add-on zu sync_photos)
+    sync_contacts: bool = False       # iCloud Contacts (vCard + Roh-JSON)
     sync_mail: bool = False
     dest_base_path: str = ""
     drive_excludes: list = field(default_factory=list)  # Drive-Ordner (rel. Pfade), die NICHT gesichert werden
@@ -76,6 +78,7 @@ class User:
             sync_drive=bool(raw.get("sync_drive", True)),
             sync_photos=bool(raw.get("sync_photos", True)),
             sync_shared_photos=bool(raw.get("sync_shared_photos", False)),
+            sync_contacts=bool(raw.get("sync_contacts", False)),
             sync_mail=bool(raw.get("sync_mail", False)),
             dest_base_path=raw.get("dest_base_path", ""),
             drive_excludes=list(raw.get("drive_excludes") or []),

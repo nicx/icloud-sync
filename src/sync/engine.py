@@ -22,7 +22,7 @@ from ..config.backup import BACKUP_DIRNAME, backup_config_to
 from ..config.paths import logs_dir
 from ..config.settings import load_settings
 from ..config.users import _UNSET, User, UsersStore, UserStatus
-from . import drive, mail, photos
+from . import contacts, drive, mail, photos
 from .mail import MailAuthError
 
 LOGGER = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ def run_user(user: User, store: Optional[UsersStore] = None, progress_cb=None) -
     # Dann ist das KEIN echter Fehler: Lauf still überspringen (kein error-Status, keine
     # Fehler-E-Mail) UND last_run NICHT setzen -> beim nächsten Tick erneut versuchen
     # (nicht erst in `sync_interval_hours`).
-    if (user.sync_drive or user.sync_photos or user.sync_mail) and not is_online():
+    if (user.sync_drive or user.sync_photos or user.sync_contacts or user.sync_mail) and not is_online():
         LOGGER.warning("[%s] iCloud nicht erreichbar -> Lauf übersprungen (Retry beim nächsten Tick).",
                        user.apple_id)
         return _set(UserStatus.IDLE)  # last_run/last_error unverändert, kein _finalize -> keine Mail
@@ -123,11 +123,11 @@ def run_user(user: User, store: Optional[UsersStore] = None, progress_cb=None) -
     reasons: list[str] = []   # gesammelte Klartext-Fehlergründe (-> last_error)
     web_reauth = False
 
-    # 2) Web-API (Drive/Photos) – nur wenn benötigt. Mail läuft davon unabhängig.
-    if user.sync_drive or user.sync_photos:
+    # 2) Web-API (Drive/Photos/Contacts) – nur wenn benötigt. Mail läuft davon unabhängig.
+    if user.sync_drive or user.sync_photos or user.sync_contacts:
         password = keychain.get_password(user.apple_id)
         if not password:
-            msg = "Kein Apple-ID-Passwort im Keychain (Drive/Photos)"
+            msg = "Kein Apple-ID-Passwort im Keychain (Drive/Photos/Contacts)"
             LOGGER.error("[%s] %s", user.apple_id, msg)
             reasons.append(msg)
         else:
@@ -158,9 +158,16 @@ def run_user(user: User, store: Optional[UsersStore] = None, progress_cb=None) -
                             msg = f"Photos: {ps.errors} Fehler"
                             reasons.append(msg)
                             notify.notify("iCloud Sync – Photos-Fehler", f"{user.apple_id}: {msg}")
+                    if user.sync_contacts:
+                        cs = contacts.sync_contacts(api, user.dest_base_path, user.apple_id,
+                                                    _phase_cb("contacts"))
+                        if cs.errors > 0:
+                            msg = f"Contacts: {cs.errors} Fehler"
+                            reasons.append(msg)
+                            notify.notify("iCloud Sync – Contacts-Fehler", f"{user.apple_id}: {msg}")
                 except Exception as exc:  # noqa: BLE001 - harter, unerwarteter Fehler
-                    LOGGER.exception("Drive/Photos-Sync für %s abgebrochen", user.apple_id)
-                    reasons.append(f"Drive/Photos-Sync abgebrochen: {exc}")
+                    LOGGER.exception("Drive/Photos/Contacts-Sync für %s abgebrochen", user.apple_id)
+                    reasons.append(f"Drive/Photos/Contacts-Sync abgebrochen: {exc}")
 
     # 3) Mail (IMAP) – eigene Credentials, unabhängig von der Web-Session.
     if user.sync_mail:

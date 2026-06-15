@@ -147,8 +147,12 @@ class SyncApp(rumps.App):
             parent.add(shared)
         if user.sync_drive:
             parent.add(self._drive_excludes_menu(user))
+        contacts_item = rumps.MenuItem("Kontakte sichern", callback=partial(self._toggle_contacts, user.apple_id))
+        contacts_item.state = 1 if user.sync_contacts else 0
+        parent.add(contacts_item)
         services = ", ".join(s for s, on in (("Drive", user.sync_drive), ("Photos", user.sync_photos),
                                              ("+Geteilt", user.sync_shared_photos),
+                                             ("Kontakte", user.sync_contacts),
                                              ("Mail", user.sync_mail)) if on) or "—"
         excl = f"  ·  Ausschlüsse: {len(user.drive_excludes)}" if user.drive_excludes else ""
         info = rumps.MenuItem(f"Dienste: {services}  ·  Ziel: {user.dest_base_path or '—'}{excl}")
@@ -272,22 +276,24 @@ class SyncApp(rumps.App):
             return
         sync_drive = self._ask_yes_no("iCloud Drive sichern?", "User hinzufügen")
         sync_photos = self._ask_yes_no("iCloud Photos sichern?", "User hinzufügen")
+        sync_contacts = self._ask_yes_no("iCloud Kontakte sichern?", "User hinzufügen")
         sync_mail = self._ask_yes_no("iCloud Mail sichern? (braucht ein app-spezifisches Passwort)",
                                      "User hinzufügen")
-        if not (sync_drive or sync_photos or sync_mail):
+        if not (sync_drive or sync_photos or sync_contacts or sync_mail):
             rumps.alert("Nichts ausgewählt", "Es wurde kein Dienst zum Sichern gewählt.")
             return
 
         user = User(apple_id=apple_id, sync_drive=sync_drive, sync_photos=sync_photos,
-                    sync_mail=sync_mail, dest_base_path=dest, status=UserStatus.IDLE)
+                    sync_contacts=sync_contacts, sync_mail=sync_mail, dest_base_path=dest,
+                    status=UserStatus.IDLE)
         status = UserStatus.OK
 
-        # Web-Passwort + Login nur, wenn Drive/Photos gewünscht.
-        if sync_drive or sync_photos:
-            password = self._ask_text("Apple-ID-Passwort (für Drive/Photos; nur im macOS-Keychain):",
+        # Web-Passwort + Login nur, wenn Drive/Photos/Contacts gewünscht.
+        if sync_drive or sync_photos or sync_contacts:
+            password = self._ask_text("Apple-ID-Passwort (für Drive/Photos/Kontakte; nur im macOS-Keychain):",
                                        "User hinzufügen", secure=True)
             if not password:
-                rumps.alert("Kein Passwort", "Ohne Apple-ID-Passwort kein Drive/Photos-Sync.")
+                rumps.alert("Kein Passwort", "Ohne Apple-ID-Passwort kein Drive/Photos/Kontakte-Sync.")
                 return
             keychain.set_password(apple_id, password)
             result = session.login(apple_id, password)
@@ -394,6 +400,17 @@ class SyncApp(rumps.App):
         notify.notify("iCloud Sync",
                       f"Geteilte Mediathek für {apple_id}: "
                       f"{'wird gesichert (SharedPhotos/)' if user.sync_shared_photos else 'aus'}.")
+
+    def _toggle_contacts(self, apple_id: str, _sender=None) -> None:
+        """Schaltet die Kontakte-Sicherung (-> Contacts/) für den User um."""
+        user = self.store.get(apple_id)
+        if user is None:
+            return
+        user.sync_contacts = not user.sync_contacts
+        self.store.update(user)
+        self._rebuild_menu()
+        notify.notify("iCloud Sync",
+                      f"Kontakte für {apple_id}: {'werden gesichert' if user.sync_contacts else 'aus'}.")
 
     # -- Drive-Ausschlüsse ---------------------------------------------------
 
@@ -728,6 +745,9 @@ class SyncApp(rumps.App):
         ph = p.get("photos")
         if ph:
             parts.append(f"Photos {ph.get('downloaded', 0)}↓ / {ph.get('seen', 0)} gepr.")
+        ct = p.get("contacts")
+        if ct:
+            parts.append(f"Kontakte {ct.get('downloaded', 0)}↓")
         ml = p.get("mail")
         if ml:
             parts.append(f"Mail {ml.get('downloaded', 0)}↓ ({ml.get('folders', 0)} Ordner)")

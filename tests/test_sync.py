@@ -19,7 +19,7 @@ os.environ["HOME"] = tempfile.mkdtemp(prefix="iclbk_test_home_")
 import sys
 sys.path.insert(0, os.getcwd())
 
-from src.sync import drive, photos, mail, engine  # noqa: E402
+from src.sync import drive, photos, mail, contacts, engine  # noqa: E402
 from src.config.users import User, UserStatus  # noqa: E402
 
 # Tests laufen ohne Netz: Erreichbarkeitsprüfung global auf "online" setzen, damit run_user
@@ -144,12 +144,22 @@ class FakePhotosLib:
         return libs
 
 
+class FakeContactsLib:
+    def __init__(self, data):
+        self._data = data   # list[dict] oder None
+
+    @property
+    def all(self):
+        return self._data
+
+
 class FakeApi:
     def __init__(self, *, drive_service=None, photos_assets=None, url_map=None,
-                 shared_assets=None, libraries_error=False):
+                 shared_assets=None, libraries_error=False, contacts_data=None):
         self.drive = drive_service
         self.photos = FakePhotosLib(photos_assets if photos_assets is not None else [],
                                     shared_assets=shared_assets, libraries_error=libraries_error)
+        self.contacts = FakeContactsLib(contacts_data)
         self.session = FakeSession(url_map or {})
 
 
@@ -408,6 +418,45 @@ def test_photos_shared_resilience():
     check(s.deleted == 0 and os.path.exists(stray), "shared leer -> kein Löschen (Guard)")
 
 
+# --- Contacts ---------------------------------------------------------------
+
+def test_contacts():
+    dest = tempfile.mkdtemp(prefix="contacts_")
+    c1 = {"contactId": "C1", "firstName": "Max", "lastName": "Mustermann",
+          "phones": [{"label": "MOBILE", "field": "+49 170 1"}],
+          "emailAddresses": [{"label": "WORK", "field": "max@example.com"}]}
+    c2 = {"contactId": "C2", "firstName": "Erika", "companyName": "ACME"}
+    api = FakeApi(contacts_data=[c1, c2])
+
+    s = contacts.sync_contacts(api, dest, "c@example.com")
+    cdir = os.path.join(dest, "Contacts")
+    files = listdir(cdir)
+    check(len([f for f in files if f.endswith(".vcf")]) == 2, f"contacts: 2 vCards ({files})")
+    check(len([f for f in files if f.endswith(".json")]) == 2, f"contacts: 2 JSON ({files})")
+    check(s.downloaded == 2, f"contacts: 2 neu (war {s.downloaded})")
+    vcf = [f for f in files if f.startswith("Max Mustermann") and f.endswith(".vcf")]
+    check(vcf and b"TEL;TYPE=MOBILE:+49 170 1" in read(os.path.join(cdir, vcf[0])), "contacts: vCard-Telefon")
+
+    # 2. Lauf unverändert -> skip
+    s2 = contacts.sync_contacts(api, dest, "c@example.com")
+    check(s2.downloaded == 0 and s2.updated == 0 and s2.skipped == 2,
+          f"contacts 2. Lauf skip (dl={s2.downloaded}, upd={s2.updated}, skip={s2.skipped})")
+
+    # Spiegel: C2 entfernt -> dessen Dateien weg
+    api2 = FakeApi(contacts_data=[c1])
+    s3 = contacts.sync_contacts(api2, dest, "c@example.com")
+    check(s3.deleted == 2, f"contacts Spiegel: 2 Dateien gelöscht (war {s3.deleted})")
+    check(len(listdir(cdir)) == 2, "contacts: nach Löschen noch 2 Dateien (C1 vcf+json)")
+
+    # Guard: None -> kein Löschen
+    s4 = contacts.sync_contacts(FakeApi(contacts_data=None), dest, "c@example.com")
+    check(s4.deleted == 0 and s4.errors == 1 and len(listdir(cdir)) == 2, "contacts Guard: None -> kein Löschen")
+
+    # Guard: leere Liste -> kein Löschen
+    s5 = contacts.sync_contacts(FakeApi(contacts_data=[]), dest, "c@example.com")
+    check(s5.deleted == 0 and len(listdir(cdir)) == 2, "contacts Guard: leere Liste -> kein Löschen")
+
+
 # --- Mail -------------------------------------------------------------------
 
 def test_mail():
@@ -575,6 +624,10 @@ def test_user_last_error_roundtrip():
           "user: drive_excludes Roundtrip")
     check(User.from_dict({"apple_id": "old@example.com"}).drive_excludes == [],
           "user: drive_excludes Default [] (alte JSON)")
+    check(User.from_dict(User(apple_id="c@x", sync_contacts=True).to_dict()).sync_contacts is True,
+          "user: sync_contacts Roundtrip")
+    check(User.from_dict({"apple_id": "old@example.com"}).sync_contacts is False,
+          "user: sync_contacts Default False (alte JSON)")
 
 
 def test_settings_auto_sync_paused_roundtrip():
@@ -755,6 +808,7 @@ if __name__ == "__main__":
     test_photos()
     test_photos_shared_library()
     test_photos_shared_resilience()
+    test_contacts()
     test_mail()
     test_mail_uid_traversal_blocked()
     test_mail_sets_mtime_from_internaldate()

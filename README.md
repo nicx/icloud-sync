@@ -6,6 +6,7 @@ Native macOS-**Menüleisten-App**, die regelmäßig (konfigurierbar, Default all
 - **iCloud Drive** (Dokumente)
 - **iCloud Photos** (Originale, inkl. Live Photos)
 - **iCloud Mail** (alle Ordner, als `.eml`)
+- **iCloud Contacts** (vCard `.vcf` + verlustfreies Roh-`.json` je Kontakt)
 
 Drive und Photos laufen über die inoffizielle iCloud-Web-API
 ([pyicloud](https://github.com/timlaing/pyicloud)); Mail über **IMAP** (Bordmittel `imaplib`).
@@ -129,7 +130,13 @@ Import sind die Passwörter ggf. neu zu setzen.
   Photos/<JJJJ>/<MM>/<kurz-id>_<dateiname>      # persönliche Mediathek; nach Erstelldatum
   SharedPhotos/<JJJJ>/<MM>/<kurz-id>_<dateiname> # geteilte Mediathek (nur wenn aktiviert)
   Mail/<Ordner>/<uid>.eml                       # echte iCloud-Ordnerstruktur, rohe RFC822-Mails
+  Contacts/<name>_<id>.vcf | .json              # vCard (importierbar) + verlustfreies Roh-JSON
 ```
+
+**Kontakte:** Pro Kontakt eine **vCard** (`.vcf`, importierbar) **und** das **Roh-JSON**
+(`.json`, verlustfrei). Aktivierbar beim Anlegen oder im User-Untermenü **„Kontakte sichern"**;
+nutzt die Web-Session (kein Extra-Passwort). Spiegel mit Schutz gegen Massenlöschen (leeres/
+fehlerhaftes Ergebnis ⇒ kein Löschen).
 
 **Geteilte Mediathek:** Standardmäßig wird nur die **persönliche** Mediathek gesichert. Über das
 User-Untermenü **„Geteilte Mediathek sichern"** lässt sich zusätzlich die iCloud Shared Photo
