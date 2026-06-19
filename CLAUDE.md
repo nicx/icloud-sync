@@ -73,9 +73,13 @@ Trennung im Code, NICHT in separate Prozesse:
   `threading.Lock` (keine überlappenden Läufe).
 - **Scheduler** (in `app.py`): zwei `rumps.Timer`. Ein langsamer Tick (300 s) prüft
   „fällige" User und stößt den Sync an; ein schneller Tick (1 s) aktualisiert nur die
-  Live-Anzeige. **Missed-Run-Catch-up**: Fälligkeit = `now - last_run >=
-  sync_interval_hours` (Default 4 h) — war der Mac im Sleep, ist `last_run` alt und der
-  User sofort fällig. `needs_reauth`- und `running`-User werden vom Auto-Sync
+  Live-Anzeige. Fälligkeit per `_is_due`: **entweder** Stunden-Intervall **oder** feste
+  Uhrzeiten. Ist `settings.sync_times` gesetzt (Liste `"HH:MM"`, lokale Wandzeit), gilt der
+  **Uhrzeit-Plan** (`schedule.due_by_schedule`: feuert je Slot genau einmal, ≤5 min nach der
+  Zeit); sonst das **Intervall** (`now - last_run >= sync_interval_hours`, Default 4 h). Die
+  reine Plan-Logik liegt in `src/schedule.py` (kein rumps-Import → unit-testbar).
+  **Missed-Run-Catch-up** in beiden Modi — war der Mac im Sleep, ist `last_run` alt und der
+  User sofort fällig (beim Uhrzeit-Plan wird der verpasste Slot einmalig nachgeholt). `needs_reauth`- und `running`-User werden vom Auto-Sync
   ausgenommen (`_is_due`); `error`-User werden beim nächsten Fälligkeitsfenster
   hingegen wieder mitgenommen (automatischer Retry). **Auto-Sync pausierbar**
   (`settings.auto_sync_paused`, Menü „Auto-Sync pausieren/fortsetzen") — dann ist niemand
@@ -106,12 +110,13 @@ icloud-sync/
   requirements-build.txt   # zusätzlich für den py2app-Build
   src/
     app.py                 # rumps-Entrypoint, Menüleiste, Scheduler, Live-Fortschritt
+    schedule.py            # reine Planungslogik für feste Sync-Uhrzeiten (parse_schedule, due_by_schedule)
     notify.py              # macOS-Notifications (rumps / pync-Fallback)
     menubar_icon.py        # Template-Icons (gefüllt=aktiv / umrandet=pausiert) fürs Menüleisten-Icon
     autostart.py           # Login-Autostart via LaunchAgent (In-App-Toggle)
     config/
       users.py             # User-Modell + UsersStore (JSON-Persistenz, kein Passwort)
-      settings.py          # globale Settings (Sync-Intervall, autostart, notifications, Fehler-E-Mail)
+      settings.py          # globale Settings (Sync-Intervall/-Uhrzeiten, autostart, notifications, Fehler-E-Mail)
       paths.py             # App-Support-Pfade, Pro-User-Cookie-Dir, Legacy-Migration
       backup.py            # Config-Sicherung (settings.json+users.json, ohne Passwörter/Sessions)
     auth/
@@ -241,6 +246,10 @@ verlässliche Quelle (`paths.logs_dir()` ist damit verdrahtet). Zusätzlich werd
 unbehandelte Exceptions via `sys.excepthook`/`threading.excepthook` geloggt, und `_spawn`
 kapselt jeden Hintergrund-Task in try/except (kein lautloses Thread-Sterben).
 
+**Lauf-Dauer:** `engine.run_user` loggt beim Start „Sync gestartet" und am Ende „Sync fertig in
+Xs (Status …)" je User — damit ist die Laufzeit (v. a. des großen Mail-/Drive-Scans) im Log
+ablesbar. Der stille Offline-Skip (Netz noch nicht oben) bleibt bewusst ohne Dauer-Zeile.
+
 **Fehlergrund sichtbar:** `engine.run_user` sammelt je Fehlerpfad einen knappen Klartext
 und legt ihn (über `UsersStore.set_status(..., last_error=…)`) in `User.last_error` ab —
 bei Erfolg `None` (gelöscht). Das Menü zeigt ihn im User-Untermenü als „⚠️ Letzter Fehler:
@@ -344,7 +353,7 @@ readonly/PEEK/UIDVALIDITY/Move/Auth-Fehler, Engine-Resilienz.
 - [x] pyicloud-Login inkl. 2FA-Erstauth pro User
 - [x] Re-Auth-Erkennung + Notification + Re-Auth-Flow im UI
 - [x] Drive/Photos/Mail/Contacts als Datei-Spiegel auf UNAS Pro (resumebar, geguarded)
-- [x] Periodischer Scheduler (konfigurierbar, Default 4 h) mit Missed-Run-Catch-up
+- [x] Periodischer Scheduler (Stunden-Intervall Default 4 h **oder** feste Uhrzeiten) mit Missed-Run-Catch-up
 - [x] „Sync jetzt"-Button, Live-Status/Fortschritt pro User
 - [x] README: Build, Ad-hoc-Signing, Gatekeeper, Mount-Voraussetzung
 

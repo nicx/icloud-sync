@@ -29,6 +29,7 @@ from .auth import keychain, session
 from .config.paths import logs_dir
 from .config.settings import Settings, load_settings, save_settings
 from .config.users import User, UsersStore, UserStatus
+from .schedule import due_by_schedule, parse_schedule
 from .sync import engine
 
 LOGGER = logging.getLogger(__name__)
@@ -123,6 +124,7 @@ class SyncApp(rumps.App):
         items.append(cfg)
         items.append(self._error_email_menu())
         items.append(rumps.MenuItem("Einstellungen…", callback=self._open_settings))
+        items.append(rumps.MenuItem("Sync-Zeiten…", callback=self._set_sync_times))
         autostart_item = rumps.MenuItem("Beim Login starten", callback=self._toggle_autostart)
         autostart_item.state = 1 if autostart.is_enabled() else 0
         items.append(autostart_item)
@@ -636,6 +638,25 @@ class SyncApp(rumps.App):
         save_settings(self.settings)
         notify.notify("iCloud Sync", f"Sync-Intervall: alle {hours} h.")
 
+    def _set_sync_times(self, _sender) -> None:
+        val = self._ask_text(
+            "Feste Sync-Uhrzeiten (HH:MM, durch Komma getrennt; leer = Stunden-Intervall):",
+            "Sync-Zeiten", default=", ".join(self.settings.sync_times))
+        if val is None:
+            return
+        try:
+            times = parse_schedule(val)
+        except ValueError:
+            rumps.alert("Ungültig", "Bitte Uhrzeiten als HH:MM angeben, z. B. 07:30, 19:30.")
+            return
+        self.settings.sync_times = times
+        save_settings(self.settings)
+        self._rebuild_menu()
+        if times:
+            notify.notify("iCloud Sync", "Sync-Zeiten: " + ", ".join(times))
+        else:
+            notify.notify("iCloud Sync", f"Feste Zeiten aus – Intervall: alle {self.settings.sync_interval_hours} h.")
+
     def _quit(self, _sender) -> None:
         rumps.quit_application()
 
@@ -780,9 +801,11 @@ class SyncApp(rumps.App):
                 engine.run_user(user, self.store, self._on_progress)
 
     def _is_due(self, user: User) -> bool:
-        """True, wenn der letzte Lauf länger als das Intervall zurückliegt (oder nie war).
+        """True, wenn ein Auto-Sync für den User fällig ist.
 
-        Deckt Missed-Run-Catch-up ab: war der Mac im Sleep, ist last_run alt -> sofort fällig.
+        Sind feste Uhrzeiten gesetzt (``settings.sync_times``), gilt der Uhrzeit-Plan
+        (lokale Wandzeit); sonst das Stunden-Intervall. Beides deckt Missed-Run-Catch-up
+        ab: war der Mac im Sleep, ist last_run alt -> sofort fällig.
         Re-Auth-/Fehler-User werden nicht automatisch gesynct (brauchen User-Eingriff).
         Bei pausiertem Auto-Sync ist niemand fällig (manueller „Sync jetzt" bleibt möglich).
         """
@@ -790,6 +813,9 @@ class SyncApp(rumps.App):
             return False
         if user.status in (UserStatus.NEEDS_REAUTH, UserStatus.RUNNING):
             return False
+        if self.settings.sync_times:
+            return due_by_schedule(self.settings.sync_times, user.last_run,
+                                   datetime.now().astimezone())
         if not user.last_run:
             return True
         try:

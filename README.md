@@ -1,6 +1,7 @@
 # iCloud Sync
 
-Native macOS-**Menüleisten-App**, die regelmäßig (konfigurierbar, Default alle 4 h) die iCloud-Daten
+Native macOS-**Menüleisten-App**, die regelmäßig (konfigurierbar: Stunden-Intervall, Default alle 4 h,
+oder feste Uhrzeiten) die iCloud-Daten
 **mehrerer Apple-Accounts** auf ein Netzlaufwerk (z. B. UNAS Pro) spiegelt:
 
 - **iCloud Drive** (Dokumente)
@@ -72,6 +73,15 @@ Das Icon zeigt auf einen Blick, ob der Auto-Sync läuft: **gefüllte Wolke** = A
 **umrandete Wolke** = pausiert. Über das Menü **„Auto-Sync pausieren/fortsetzen"** lässt er sich
 anhalten — geplante Läufe unterbleiben dann, **„Sync jetzt" bleibt aber manuell möglich**. Ein
 **rotes Badge** signalisiert zusätzlich `error`/`needs_reauth`, ein Spinner einen laufenden Sync.
+
+### Sync-Zeitplan: Intervall oder feste Uhrzeiten
+
+Standardmäßig läuft der Auto-Sync im **Stunden-Intervall** (Menü **„Einstellungen…"**, Default
+alle 4 h). Alternativ lassen sich über **„Sync-Zeiten…"** **feste Uhrzeiten** (lokale Wandzeit,
+`HH:MM`, durch Komma getrennt — z. B. `07:30, 19:30`) angeben; dann gilt **statt** des Intervalls
+der Uhrzeit-Plan. Leeres Feld ⇒ zurück zum Intervall. Der Scheduler prüft alle 5 min, feuert also
+je Slot **einmal** innerhalb von ≤5 min nach der genannten Zeit. War der Mac zur Zeit im Sleep,
+wird der verpasste Slot beim nächsten Aufwachen **einmalig** nachgeholt (Catch-up).
 
 Nach einem **Reboot** wartet die App eine kurze Gnadenfrist (`startup_delay_seconds`, Default 90 s)
 und prüft die iCloud-Erreichbarkeit: Ist das Netz/DNS noch nicht oben, wird der Lauf **still

@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import socket
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -98,6 +99,8 @@ def run_user(user: User, store: Optional[UsersStore] = None, progress_cb=None) -
         return status
 
     _set(UserStatus.RUNNING)
+    t0 = time.monotonic()
+    LOGGER.info("[%s] Sync gestartet", user.apple_id)
 
     # 1) Ziel-Volume gemountet?
     if not is_mount_available(user.dest_base_path):
@@ -202,6 +205,8 @@ def run_user(user: User, store: Optional[UsersStore] = None, progress_cb=None) -
     else:
         status = UserStatus.OK
         last_error = None  # Erfolg -> alten Grund löschen
+    LOGGER.info("[%s] Sync fertig in %.0fs (Status %s)",
+                user.apple_id, time.monotonic() - t0, status.value)
     return _finalize(status, last_error, last_run=_now_iso())
 
 

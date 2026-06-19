@@ -643,6 +643,54 @@ def test_settings_auto_sync_paused_roundtrip():
     save_settings(Settings())  # zurücksetzen
 
 
+def test_settings_sync_times_roundtrip():
+    """sync_times überleben save/load; Default ist leere Liste."""
+    from src.config.settings import Settings, load_settings, save_settings
+
+    save_settings(Settings(sync_times=["07:30", "19:30"]))
+    loaded = load_settings()
+    check(loaded.sync_times == ["07:30", "19:30"], "settings: sync_times persistiert")
+    check(Settings().sync_times == [], "settings: sync_times-Default leer")
+    save_settings(Settings())  # zurücksetzen
+
+
+def test_parse_schedule():
+    """parse_schedule normalisiert, dedupliziert, sortiert; wirft bei Unsinn."""
+    from src.schedule import parse_schedule
+
+    check(parse_schedule("7:30, 19:30") == ["07:30", "19:30"], "schedule: parse normalisiert HH:MM")
+    check(parse_schedule("19:30, 07:30, 7:30") == ["07:30", "19:30"], "schedule: parse dedupliziert+sortiert")
+    check(parse_schedule("  ") == [], "schedule: parse leer -> []")
+    for bad in ("25:00", "abc", "7:60"):
+        try:
+            parse_schedule(bad)
+            check(False, f"schedule: parse('{bad}') hätte ValueError werfen müssen")
+        except ValueError:
+            check(True, f"schedule: parse('{bad}') -> ValueError")
+
+
+def test_due_by_schedule():
+    """due_by_schedule: pro Slot genau einmal, inkl. Tageswechsel-Catch-up."""
+    from datetime import datetime, timezone
+    from src.schedule import due_by_schedule
+
+    tz = timezone.utc  # aware-Zeit reicht; Logik ist tz-relativ
+    def local(h, m):
+        return datetime(2026, 6, 19, h, m, tzinfo=tz)
+    def iso(day, h, m):
+        return datetime(2026, 6, day, h, m, tzinfo=tz).isoformat()
+
+    check(due_by_schedule(["07:30"], None, local(8, 0)) is True, "schedule: nie gelaufen -> fällig")
+    check(due_by_schedule([], iso(18, 1, 0), local(8, 0)) is False, "schedule: keine Zeiten -> nie fällig")
+    # Slot 07:30 heute bereits erreicht; last_run davor (gestern) -> fällig, danach (07:31) -> nicht.
+    check(due_by_schedule(["07:30"], iso(18, 19, 0), local(8, 0)) is True, "schedule: Slot überschritten -> fällig")
+    check(due_by_schedule(["07:30"], iso(19, 7, 31), local(8, 0)) is False, "schedule: nach Lauf im Slot -> nicht erneut")
+    # Vor dem heutigen Slot: gestriger 07:30 ist schon abgedeckt -> nicht fällig.
+    check(due_by_schedule(["07:30"], iso(18, 7, 35), local(7, 29)) is False, "schedule: vor Slot -> nicht fällig")
+    # Zwei Slots: 19:30 fällig, obwohl 07:30 heute schon lief.
+    check(due_by_schedule(["07:30", "19:30"], iso(19, 7, 35), local(20, 0)) is True, "schedule: zweiter Slot fällig")
+
+
 def test_engine_offline_is_transient():
     """Offline (iCloud nicht erreichbar) ist KEIN Fehler: kein error-Status, keine Mail,
     last_run unverändert -> Retry beim nächsten Tick (nicht erst nach sync_interval_hours)."""
@@ -820,6 +868,9 @@ if __name__ == "__main__":
     test_engine_clears_last_error_on_success()
     test_user_last_error_roundtrip()
     test_settings_auto_sync_paused_roundtrip()
+    test_settings_sync_times_roundtrip()
+    test_parse_schedule()
+    test_due_by_schedule()
     test_engine_offline_is_transient()
     test_engine_emails_on_new_problem()
     test_config_backup_restore()

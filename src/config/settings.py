@@ -7,7 +7,7 @@ Einstellungen wie das Sync-Intervall.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 from .paths import settings_file
 
@@ -20,6 +20,8 @@ class Settings:
     """Prozessweite Einstellungen.
 
     :param sync_interval_hours: Mindestabstand zwischen zwei Sync-Läufen je User.
+    :param sync_times: feste Sync-Uhrzeiten (lokale Wandzeit, ``"HH:MM"``). Leer ⇒ es gilt
+        ``sync_interval_hours``; gesetzt ⇒ feste Uhrzeiten **statt** Intervall.
     :param autostart: Beim Login automatisch starten (Verdrahtung folgt späterer Durchgang).
     :param notifications: macOS-Notifications aktiviert.
     :param auto_sync_paused: Auto-Sync pausiert (Scheduler stößt keine Läufe an; Icon umrandet).
@@ -32,6 +34,7 @@ class Settings:
     """
 
     sync_interval_hours: int = DEFAULT_SYNC_INTERVAL_HOURS
+    sync_times: list[str] = field(default_factory=list)  # leer ⇒ Intervall; sonst feste Uhrzeiten (lokal)
     autostart: bool = False
     notifications: bool = True
     auto_sync_paused: bool = False  # True ⇒ Scheduler stößt keine Läufe an (Icon umrandet)
