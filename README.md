@@ -55,9 +55,8 @@ persistiert (`…/sessions/<apple-id>/`), sodass folgende Starts meist ohne erne
 **Mail** wird stattdessen ein **app-spezifisches Passwort** abgefragt (siehe unten). Ziel-Ordner und
 Dienste lassen sich später über **„Bearbeiten…"** im selben Tab anpassen.
 
-> Im Menüleisten-Menü selbst bleiben nur die häufigen Aktionen (pro Account „Sync jetzt" und die
-> Drive-Ausschlüsse, „Alle jetzt synchronisieren", Auto-Sync pausieren, „Einstellungen…",
-> „Log anzeigen…").
+> Im Menüleisten-Menü selbst bleiben nur die häufigen Aktionen (pro Account „Sync jetzt",
+> „Alle jetzt synchronisieren", Auto-Sync pausieren, „Einstellungen…", „Log anzeigen…").
 
 ### iCloud Mail (IMAP) einrichten
 
@@ -163,10 +162,10 @@ doppelt gesichert. (Ohne diese Option verschwindet ein von „Persönlich" nach 
 verschobenes Foto aus dem `Photos/`-Spiegel.)
 
 **Geteilte Drive-Ordner:** Ein Ordner, den du besitzt und mit jemandem teilst, erscheint auch
-in **dessen** Account (als „mit mir geteilt") und würde dort doppelt gesichert. Im User-Untermenü
-**„Drive-Ausschlüsse"** kannst du die obersten Drive-Ordner **live laden** und per Häkchen vom
-Sync ausnehmen — typischerweise auf dem Account des Mitnutzers die geteilten Ordner, sodass nur
-der **Besitzer** sie sichert. ⚠️ Ausgeschlossene Ordner werden beim nächsten Lauf **lokal aus dem
+in **dessen** Account (als „mit mir geteilt") und würde dort doppelt gesichert. Über
+**Einstellungs-Fenster → Accounts → „Drive-Ausschlüsse…"** (Account wählen) werden die obersten
+Drive-Ordner **live geladen** und per Häkchen vom Sync ausgenommen — typischerweise auf dem
+Account des Mitnutzers die geteilten Ordner, sodass nur der **Besitzer** sie sichert. ⚠️ Ausgeschlossene Ordner werden beim nächsten Lauf **lokal aus dem
 Spiegel entfernt** (das ist gewollt — so verschwindet die Dublette).
 
 Der Sync ist **inkrementell** (Drive: Vergleich über Größe/Änderungszeit; Photos/Mail: Existenz der

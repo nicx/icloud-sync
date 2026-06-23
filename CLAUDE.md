@@ -67,9 +67,9 @@ In-App-Toggle (LaunchAgent).
 
 Trennung im Code, NICHT in separate Prozesse:
 
-- **UI-Schicht** (`src/app.py`, rumps): Menüleisten-Icon/-Menü (schlank: pro Account „Sync jetzt"
-  + Drive-Ausschlüsse, „Alle jetzt synchronisieren", Auto-Sync pausieren, „Einstellungen…",
-  „Log anzeigen…"), Live-Fortschritt (Spinner + Counts), Scheduler. Hält keine Sync-Logik. Syncs
+- **UI-Schicht** (`src/app.py`, rumps): Menüleisten-Icon/-Menü (schlank: pro Account „Sync jetzt",
+  „Alle jetzt synchronisieren", Auto-Sync pausieren, „Einstellungen…", „Log anzeigen…"),
+  Live-Fortschritt (Spinner + Counts), Scheduler. Hält keine Sync-Logik. Syncs
   laufen in einem Hintergrund-Thread (Daemon), serialisiert über ein `threading.Lock` (keine
   überlappenden Läufe).
 - **Einstellungs-Fenster** (`src/prefs_window.py` + `src/ui_appkit.py`, **reines pyobjc/AppKit**):
@@ -159,8 +159,8 @@ Pro User (`User`-Dataclass, persistiert als `users.json` in App Support):
   Engine `Drive/`, `Photos/`, `Contacts/`, `Mail/` an
 - `drive_excludes` (Default leer): Drive-Ordner (rel. Pfade), die **nicht** gesichert werden —
   z. B. mit mir geteilte Ordner auf dem Collaborator-Account. Ausgeschlossenes wird vom
-  Spiegel-Prune **lokal entfernt**. Auswahl im Menü „Drive-Ausschlüsse" (Live-Ordnerliste +
-  Häkchen).
+  Spiegel-Prune **lokal entfernt**. Auswahl im Einstellungs-Fenster → Accounts →
+  „Drive-Ausschlüsse…" (Live-Ordnerliste + Häkchen).
 - `status`: `idle` / `running` / `ok` / `needs_reauth` / `error`
 - `last_run`: ISO-8601-Zeitstempel (UTC) des letzten erfolgreichen Laufbeginns
 - `last_error`: Klartext-Grund des letzten Fehlers (für Menü/Notification; `None` bei Erfolg)

@@ -169,10 +169,10 @@ class PreferencesWindowController(NSObject):
 
     def _build_accounts(self) -> NSView:
         v = self._content_view()
-        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(16, 70, 480, 274))
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(16, 80, 480, 264))
         scroll.setHasVerticalScroller_(True)
         scroll.setAutoresizingMask_(2 | 16)
-        table = NSTableView.alloc().initWithFrame_(NSMakeRect(0, 0, 478, 272))
+        table = NSTableView.alloc().initWithFrame_(NSMakeRect(0, 0, 478, 262))
         table.setUsesAlternatingRowBackgroundColors_(True)
         for ident, title, width in (("account", "Account", 165), ("status", "Status", 70),
                                     ("services", "Dienste", 150), ("dest", "Ziel", 200),
@@ -187,13 +187,16 @@ class PreferencesWindowController(NSObject):
         v.addSubview_(scroll)
         self._table = table
 
-        actions = [("Hinzufügen", b"addAccount:"), ("Bearbeiten…", b"editAccount:"),
-                   ("Entfernen…", b"removeAccount:"), ("Sync jetzt", b"syncAccount:"),
-                   ("Re-Auth…", b"reauthAccount:"), ("Mail-Passwort…", b"mailPwAccount:")]
-        x = 16
-        for title, action in actions:
-            v.addSubview_(_button(title, x, 32, 76, self, action))
-            x += 79
+        # Zwei Button-Reihen (sonst zu breit fürs Fenster).
+        row1 = [("Hinzufügen", b"addAccount:"), ("Bearbeiten…", b"editAccount:"),
+                ("Entfernen…", b"removeAccount:"), ("Sync jetzt", b"syncAccount:")]
+        row2 = [("Re-Auth…", b"reauthAccount:"), ("Mail-Passwort…", b"mailPwAccount:"),
+                ("Drive-Ausschlüsse…", b"driveExcludesAccount:")]
+        for row, y in ((row1, 44), (row2, 10)):
+            x = 16
+            for title, action in row:
+                v.addSubview_(_button(title, x, y, 116, self, action))
+                x += 118
         return v
 
     # --- Laden/Speichern globaler Felder -----------------------------------
@@ -400,6 +403,82 @@ class PreferencesWindowController(NSObject):
         if self._prompt_mail_pw(u.apple_id) and not u.sync_mail:
             u.sync_mail = True
             self.facade.update_user(u)
+        self._reload_accounts()
+        self.facade.refresh_ui()
+
+    @objc.IBAction
+    def driveExcludesAccount_(self, _sender) -> None:  # noqa: N802
+        u = self._selected_user()
+        if u is None:
+            ui_appkit.alert("Kein Account gewählt", "Bitte zuerst einen Account in der Liste wählen.", "warning")
+            return
+        if not u.sync_drive:
+            ui_appkit.alert("Drive nicht aktiv", "Drive-Ausschlüsse gibt es nur, wenn Drive gesichert wird.", "warning")
+            return
+        if not self.facade.is_online():
+            ui_appkit.alert("Offline", "iCloud ist gerade nicht erreichbar.", "warning")
+            return
+        names = self.facade.list_drive_folders(u.apple_id)
+        if names is None:
+            ui_appkit.alert("Ordner nicht abrufbar",
+                            "Oberste Drive-Ordner konnten nicht geladen werden (Passwort fehlt, "
+                            "offline oder Re-Auth nötig).", "warning")
+            return
+        self._choose_excludes(u, names)
+
+    def _choose_excludes(self, user: User, names: list) -> None:
+        """Modaler Dialog: oberste Drive-Ordner per Häkchen aus-/abwählen."""
+        excluded = set(user.drive_excludes)
+        all_names = sorted(set(names) | excluded)
+        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 420, 420), NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
+            NSBackingStoreBuffered, False)
+        win.setTitle_(f"Drive-Ausschlüsse – {user.apple_id}")
+        cv = win.contentView()
+        cv.addSubview_(_label("Angehakte Ordner werden NICHT gesichert (und lokal entfernt):",
+                              16, 386, 388, 16))
+
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(16, 60, 388, 318))
+        scroll.setHasVerticalScroller_(True)
+        row_h = 24
+        doc_h = max(318, len(all_names) * row_h + 8)
+        doc = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 368, doc_h))
+        checks = []
+        for i, name in enumerate(all_names):
+            cb = _checkbox(name, 8, doc_h - (i + 1) * row_h, 352)
+            cb.setState_(1 if name in excluded else 0)
+            doc.addSubview_(cb)
+            checks.append((name, cb))
+        scroll.setDocumentView_(doc)
+        cv.addSubview_(scroll)
+
+        result = {"ok": False}
+
+        def do_ok(_s=None):
+            from AppKit import NSApp
+            result["ok"] = True
+            NSApp.stopModalWithCode_(1)
+            win.orderOut_(None)
+
+        def do_cancel(_s=None):
+            from AppKit import NSApp
+            NSApp.stopModalWithCode_(0)
+            win.orderOut_(None)
+
+        ok_btn = _make_button("Speichern", 310, 16, 92, do_ok)
+        ok_btn.setKeyEquivalent_("\r")
+        cancel_btn = _make_button("Abbrechen", 210, 16, 92, do_cancel)
+        cv.addSubview_(ok_btn)
+        cv.addSubview_(cancel_btn)
+        self._editor_keep = (win, checks, ok_btn, cancel_btn)
+
+        ui_appkit.activate_app()
+        from AppKit import NSApp
+        NSApp.runModalForWindow_(win)
+        if not result["ok"]:
+            return
+        user.drive_excludes = [name for name, cb in checks if cb.state() == 1]
+        self.facade.update_user(user)
         self._reload_accounts()
         self.facade.refresh_ui()
 
