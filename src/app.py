@@ -26,13 +26,137 @@ import rumps
 
 from . import autostart, menubar_icon, notify
 from .auth import keychain, session
+from .config.backup import backup_config_to, restore_config_from
 from .config.paths import logs_dir
 from .config.settings import Settings, load_settings, save_settings
 from .config.users import User, UsersStore, UserStatus
-from .schedule import due_by_schedule, parse_schedule
+from .schedule import due_by_schedule
 from .sync import engine
 
 LOGGER = logging.getLogger(__name__)
+
+
+def user_services_summary(user: User) -> str:
+    """Kurzliste der aktiven Dienste eines Users (für Menü und Accounts-Tabelle)."""
+    return ", ".join(s for s, on in (("Drive", user.sync_drive), ("Photos", user.sync_photos),
+                                     ("+Geteilt", user.sync_shared_photos),
+                                     ("Kontakte", user.sync_contacts),
+                                     ("Mail", user.sync_mail)) if on) or "—"
+
+
+class PrefsFacade:
+    """Schmale Brücke vom Einstellungs-Fenster zu Engine/Config/Keychain.
+
+    Bewusst **ohne** UI/rumps-Bezug, damit das Fenster (`prefs_window`) beim späteren
+    rumps-Ausbau (Phase 3) unverändert weiterläuft. Hält nur eine Referenz auf die laufende
+    App für Daten-/Aktions-Delegation und das UI-Refresh.
+    """
+
+    def __init__(self, app: "SyncApp") -> None:
+        self.app = app
+
+    # Settings
+    @property
+    def settings(self) -> Settings:
+        return self.app.settings
+
+    def save_settings(self) -> None:
+        save_settings(self.app.settings)
+
+    # Users
+    def list_users(self) -> list:
+        return self.app.store.list()
+
+    def get_user(self, apple_id: str):
+        return self.app.store.get(apple_id)
+
+    def add_user(self, user: User) -> None:
+        self.app.store.add(user)
+
+    def update_user(self, user: User) -> None:
+        self.app.store.update(user)
+
+    def remove_user(self, apple_id: str) -> None:
+        self.app.store.remove(apple_id)
+        keychain.delete_password(apple_id)
+        keychain.delete_mail_password(apple_id)
+
+    def set_status(self, apple_id: str, status: UserStatus) -> None:
+        self.app.store.set_status(apple_id, status)
+
+    def services_summary(self, user: User) -> str:
+        return user_services_summary(user)
+
+    # Credentials / Login
+    def get_web_password(self, apple_id: str):
+        return keychain.get_password(apple_id)
+
+    def set_web_password(self, apple_id: str, pw: str) -> None:
+        keychain.set_password(apple_id, pw)
+
+    def delete_web_password(self, apple_id: str) -> None:
+        keychain.delete_password(apple_id)
+
+    def get_mail_password(self, apple_id: str):
+        return keychain.get_mail_password(apple_id)
+
+    def set_mail_password(self, apple_id: str, pw: str) -> None:
+        keychain.set_mail_password(apple_id, pw)
+
+    def login(self, apple_id: str, pw: str):
+        return session.login(apple_id, pw)
+
+    def submit_2fa(self, api, code: str) -> bool:
+        return session.submit_2fa_code(api, code)
+
+    def is_online(self) -> bool:
+        return engine.is_online()
+
+    # Aktionen
+    def sync_user(self, apple_id: str) -> None:
+        user = self.app.store.get(apple_id)
+        if user is not None:
+            self.app._spawn(partial(self.app._run_sync_user, user))
+
+    def test_mail(self, host: str, port: int, sender: str, to: str) -> None:
+        def _run():
+            ok = notify.send_mail(host, int(port), sender, to, "iCloud Sync: Test-E-Mail",
+                                  "Test der Fehler-Benachrichtigung über das lokale Mail-Relay.")
+            notify.notify("iCloud Sync", "Test-E-Mail eingeliefert." if ok else
+                          f"Test-E-Mail fehlgeschlagen ({host}:{port}) – läuft das Relay?")
+        self.app._spawn(_run)
+
+    # Autostart
+    def autostart_enabled(self) -> bool:
+        return autostart.is_enabled()
+
+    def set_autostart(self, enable: bool):
+        """True bei Erfolg, oder ein Fehlertext (z. B. im Dev-Modus ohne .app-Bundle)."""
+        if enable:
+            args = self.app._autostart_program_args()
+            if args is None:
+                return ("Autostart funktioniert nur im gebauten .app-Bundle, "
+                        "nicht im Entwicklungsmodus (python -m src.app).")
+            autostart.enable(args)
+        else:
+            autostart.disable()
+        return True
+
+    # Konfiguration sichern/laden
+    def export_config(self, directory: str) -> int:
+        return backup_config_to(Path(directory) / "icloud-sync-config")
+
+    def import_config(self, directory: str) -> int:
+        n = restore_config_from(Path(directory))
+        if n:
+            self.app.settings = load_settings()
+            self.app.store = UsersStore.loaded()
+            self.app._reset_stale_running()
+        return n
+
+    # UI
+    def refresh_ui(self) -> None:
+        self.app._rebuild_menu()
 
 # Wie oft der Scheduler prüft, ob ein User „fällig" ist (Sekunden). Der eigentliche
 # Sync-Abstand steckt in Settings.sync_interval_hours; dieser Tick ist nur die Polling-Rate,
@@ -77,6 +201,7 @@ class SyncApp(rumps.App):
         self._drive_folders: dict = {}   # apple_id -> [Top-Level-Drive-Ordner] (Laufzeit-Cache)
         self._menu_dirty = False         # vom Hintergrund gesetzt -> _ui_tick baut das Menü neu
         self._started = time.monotonic()  # für die Start-Gnadenfrist (Netz nach Reboot)
+        self._prefs = None               # Einstellungs-Fenster-Controller (lazy)
         self._setup_menubar_icon()
         self._rebuild_menu()
 
@@ -116,48 +241,24 @@ class SyncApp(rumps.App):
         items.append(rumps.MenuItem("Alle jetzt synchronisieren", callback=self._sync_all))
         pause_label = "Auto-Sync fortsetzen" if self.settings.auto_sync_paused else "Auto-Sync pausieren"
         items.append(rumps.MenuItem(pause_label, callback=self._toggle_auto_sync))
-        items.append(rumps.MenuItem("User hinzufügen…", callback=self._add_user))
+        items.append(rumps.MenuItem("Einstellungen…", callback=self._open_prefs))
         items.append(rumps.MenuItem("Log anzeigen…", callback=self._open_log))
-        cfg = rumps.MenuItem("Konfiguration …")
-        cfg.add(rumps.MenuItem("Exportieren…", callback=self._export_config))
-        cfg.add(rumps.MenuItem("Importieren…", callback=self._import_config))
-        items.append(cfg)
-        items.append(self._error_email_menu())
-        items.append(rumps.MenuItem("Einstellungen…", callback=self._open_settings))
-        items.append(rumps.MenuItem("Sync-Zeiten…", callback=self._set_sync_times))
-        autostart_item = rumps.MenuItem("Beim Login starten", callback=self._toggle_autostart)
-        autostart_item.state = 1 if autostart.is_enabled() else 0
-        items.append(autostart_item)
         items.append(rumps.separator)
         items.append(rumps.MenuItem("Beenden", callback=self._quit))
         self.menu = items
         self._update_icon()
 
     def _user_menu_item(self, user: User) -> rumps.MenuItem:
+        """Schlankes Menü pro Account: Schnell-Sync + Drive-Ausschlüsse; Rest im Fenster."""
         symbol = STATUS_SYMBOL.get(user.status, "•")
         last = f" – {self._fmt_last_run(user.last_run)}" if user.last_run else ""
         parent = rumps.MenuItem(f"{symbol} {user.apple_id}{last}")
         parent.add(rumps.MenuItem("Sync jetzt", callback=partial(self._sync_one, user.apple_id)))
-        parent.add(rumps.MenuItem("Re-Auth…", callback=partial(self._reauth, user.apple_id)))
-        parent.add(rumps.MenuItem("Mail-App-Passwort setzen…",
-                                  callback=partial(self._set_mail_password, user.apple_id)))
-        parent.add(rumps.MenuItem("Zielordner ändern…", callback=partial(self._change_dest, user.apple_id)))
-        if user.sync_photos:  # geteilte Mediathek ist ein Add-on zu den persönlichen Photos
-            shared = rumps.MenuItem("Geteilte Mediathek sichern",
-                                    callback=partial(self._toggle_shared_photos, user.apple_id))
-            shared.state = 1 if user.sync_shared_photos else 0
-            parent.add(shared)
         if user.sync_drive:
             parent.add(self._drive_excludes_menu(user))
-        contacts_item = rumps.MenuItem("Kontakte sichern", callback=partial(self._toggle_contacts, user.apple_id))
-        contacts_item.state = 1 if user.sync_contacts else 0
-        parent.add(contacts_item)
-        services = ", ".join(s for s, on in (("Drive", user.sync_drive), ("Photos", user.sync_photos),
-                                             ("+Geteilt", user.sync_shared_photos),
-                                             ("Kontakte", user.sync_contacts),
-                                             ("Mail", user.sync_mail)) if on) or "—"
         excl = f"  ·  Ausschlüsse: {len(user.drive_excludes)}" if user.drive_excludes else ""
-        info = rumps.MenuItem(f"Dienste: {services}  ·  Ziel: {user.dest_base_path or '—'}{excl}")
+        info = rumps.MenuItem(f"Dienste: {user_services_summary(user)}  ·  "
+                              f"Ziel: {user.dest_base_path or '—'}{excl}")
         info.set_callback(None)  # nur Info, nicht klickbar
         parent.add(info)
         # Bei Fehler/Re-Auth den letzten Grund als nicht-klickbare Info-Zeile zeigen.
@@ -166,10 +267,16 @@ class SyncApp(rumps.App):
             err = rumps.MenuItem(f"⚠️ Letzter Fehler: {reason}")
             err.set_callback(None)
             parent.add(err)
-        parent.add(rumps.separator)
-        parent.add(rumps.MenuItem("Entfernen…", callback=partial(self._remove_user, user.apple_id)))
         self._user_items[user.apple_id] = parent
         return parent
+
+    def _open_prefs(self, _sender=None) -> None:
+        """Öffnet das native Einstellungs-Fenster (lazy erzeugt, danach wiederverwendet)."""
+        from .prefs_window import PreferencesWindowController
+
+        if self._prefs is None:
+            self._prefs = PreferencesWindowController.alloc().initWithFacade_(PrefsFacade(self))
+        self._prefs.show()
 
     def _setup_menubar_icon(self) -> None:
         """Setzt ein echtes Template-Image als Menüleisten-Icon (statt Textglyph)."""
@@ -206,213 +313,6 @@ class SyncApp(rumps.App):
             return dt.astimezone().strftime("%d.%m. %H:%M")
         except ValueError:
             return iso
-
-    # -- Kleine Dialog-Helfer ------------------------------------------------
-
-    def _ask_text(self, message: str, title: str, default: str = "", secure: bool = False) -> Optional[str]:
-        win = rumps.Window(
-            message=message,
-            title=title,
-            default_text=default,
-            ok="OK",
-            cancel="Abbrechen",
-            dimensions=(320, 24),
-            secure=secure,
-        )
-        resp = win.run()
-        if resp.clicked == 0:
-            return None
-        return resp.text.strip()
-
-    def _ask_yes_no(self, message: str, title: str) -> bool:
-        # rumps.Window: OK -> clicked==1 (Ja), Abbrechen -> 0 (Nein)
-        win = rumps.Window(message=message, title=title, ok="Ja", cancel="Nein", dimensions=(1, 1))
-        return win.run().clicked == 1
-
-    def _ask_directory(self, message: str, default: Optional[str] = None) -> Optional[str]:
-        """Komfortable Ordnerauswahl: nativer Finder-Dialog, mit Fallback auf Texteingabe.
-
-        Gibt den gewählten Pfad zurück oder None bei Abbruch.
-        """
-        try:
-            return self._native_directory_dialog(message, default)
-        except Exception:  # noqa: BLE001 - im Zweifel nie blockieren
-            LOGGER.exception("NSOpenPanel nicht verfügbar, Fallback auf Texteingabe")
-            text = self._ask_text(message, "Ordner wählen", default=default or "")
-            return text or None
-
-    @staticmethod
-    def _native_directory_dialog(message: str, default_path: Optional[str]) -> Optional[str]:
-        """Nativer Finder-Ordnerdialog (NSOpenPanel). Muss auf dem Main-Thread laufen."""
-        from AppKit import NSApp, NSOpenPanel
-        from Foundation import NSURL
-
-        panel = NSOpenPanel.openPanel()
-        panel.setCanChooseFiles_(False)
-        panel.setCanChooseDirectories_(True)
-        panel.setAllowsMultipleSelection_(False)
-        panel.setCanCreateDirectories_(True)
-        panel.setPrompt_("Auswählen")
-        panel.setMessage_(message)
-        if default_path:
-            panel.setDirectoryURL_(NSURL.fileURLWithPath_(default_path))
-        # Menüleisten-App (LSUIElement) in den Vordergrund holen, sonst öffnet der Dialog dahinter.
-        NSApp.activateIgnoringOtherApps_(True)
-        if panel.runModal() != 1:  # 1 == NSModalResponseOK
-            return None
-        urls = panel.URLs()
-        return urls[0].path() if urls else None
-
-    # -- User hinzufügen -----------------------------------------------------
-
-    def _add_user(self, _sender) -> None:
-        apple_id = self._ask_text("Apple-ID (E-Mail):", "User hinzufügen")
-        if not apple_id:
-            return
-        if self.store.get(apple_id) is not None:
-            rumps.alert("Bereits vorhanden", f"{apple_id} ist schon konfiguriert.")
-            return
-        dest = self._ask_directory(f"Ziel-Ordner für das Backup von {apple_id} wählen "
-                                   "(z. B. auf dem UNAS-Volume):")
-        if not dest:
-            return
-        sync_drive = self._ask_yes_no("iCloud Drive sichern?", "User hinzufügen")
-        sync_photos = self._ask_yes_no("iCloud Photos sichern?", "User hinzufügen")
-        sync_contacts = self._ask_yes_no("iCloud Kontakte sichern?", "User hinzufügen")
-        sync_mail = self._ask_yes_no("iCloud Mail sichern? (braucht ein app-spezifisches Passwort)",
-                                     "User hinzufügen")
-        if not (sync_drive or sync_photos or sync_contacts or sync_mail):
-            rumps.alert("Nichts ausgewählt", "Es wurde kein Dienst zum Sichern gewählt.")
-            return
-
-        user = User(apple_id=apple_id, sync_drive=sync_drive, sync_photos=sync_photos,
-                    sync_contacts=sync_contacts, sync_mail=sync_mail, dest_base_path=dest,
-                    status=UserStatus.IDLE)
-        status = UserStatus.OK
-
-        # Web-Passwort + Login nur, wenn Drive/Photos/Contacts gewünscht.
-        if sync_drive or sync_photos or sync_contacts:
-            password = self._ask_text("Apple-ID-Passwort (für Drive/Photos/Kontakte; nur im macOS-Keychain):",
-                                       "User hinzufügen", secure=True)
-            if not password:
-                rumps.alert("Kein Passwort", "Ohne Apple-ID-Passwort kein Drive/Photos/Kontakte-Sync.")
-                return
-            keychain.set_password(apple_id, password)
-            result = session.login(apple_id, password)
-            if result.error:
-                keychain.delete_password(apple_id)
-                rumps.alert("Login fehlgeschlagen", result.error)
-                return
-            if result.needs_2fa and not self._complete_2fa(result.api, apple_id):
-                status = UserStatus.NEEDS_REAUTH
-
-        # Mail: app-spezifisches Passwort.
-        if sync_mail:
-            if not self._prompt_mail_password(apple_id):
-                user.sync_mail = False
-                rumps.alert("Mail übersprungen",
-                            "Ohne app-spezifisches Passwort wird Mail nicht gesichert. "
-                            "Du kannst es spaeter ueber 'Mail-App-Passwort setzen...' nachholen.")
-
-        user.status = status
-        self.store.add(user)
-        self._rebuild_menu()
-        notify.notify("iCloud Sync", f"User {apple_id} hinzugefügt ({user.status.value}).")
-
-    def _prompt_mail_password(self, apple_id: str) -> bool:
-        """Fragt das app-spezifische Mail-Passwort ab und legt es im Keychain ab. True bei Erfolg."""
-        app_pw = self._ask_text(
-            "App-spezifisches Passwort für iCloud Mail.\n"
-            "Auf appleid.apple.com → Anmeldung & Sicherheit → App-spezifische Passwörter erzeugen.",
-            "iCloud Mail – App-Passwort", secure=True)
-        if not app_pw:
-            return False
-        keychain.set_mail_password(apple_id, app_pw)
-        return True
-
-    def _complete_2fa(self, api, apple_id: str) -> bool:
-        """Fragt den 2FA-Code ab und vertraut der Session. True bei Erfolg."""
-        if api is None:
-            rumps.alert("2FA nötig",
-                        "Eine 2FA-Bestätigung ist erforderlich. Bitte erneut über Re-Auth versuchen.")
-            return False
-        code = self._ask_text("6-stelliger Code von einem vertrauenswürdigen Apple-Gerät:",
-                              "Zwei-Faktor-Authentifizierung")
-        if not code:
-            return False
-        if session.submit_2fa_code(api, code):
-            return True
-        rumps.alert("Code abgelehnt", "Der 2FA-Code wurde nicht akzeptiert.")
-        return False
-
-    # -- Re-Auth -------------------------------------------------------------
-
-    def _reauth(self, apple_id: str, _sender=None) -> None:
-        password = keychain.get_password(apple_id)
-        if not password:
-            rumps.alert("Kein Passwort", f"Für {apple_id} ist kein Passwort im Keychain hinterlegt.")
-            return
-        result = session.login(apple_id, password)
-        if result.error:
-            rumps.alert("Fehler", result.error)
-            self.store.set_status(apple_id, UserStatus.ERROR)
-            self._rebuild_menu()
-            return
-        if result.needs_2fa:
-            ok = self._complete_2fa(result.api, apple_id)
-            self.store.set_status(apple_id, UserStatus.OK if ok else UserStatus.NEEDS_REAUTH)
-        else:
-            self.store.set_status(apple_id, UserStatus.OK)
-        self._rebuild_menu()
-
-    def _set_mail_password(self, apple_id: str, _sender=None) -> None:
-        """Mail-App-Passwort setzen/aktualisieren und Mail für den User aktivieren."""
-        user = self.store.get(apple_id)
-        if user is None:
-            return
-        if not self._prompt_mail_password(apple_id):
-            return
-        if not user.sync_mail:
-            user.sync_mail = True
-            self.store.update(user)
-        self._rebuild_menu()
-        notify.notify("iCloud Sync", f"Mail-App-Passwort für {apple_id} gespeichert.")
-
-    def _change_dest(self, apple_id: str, _sender=None) -> None:
-        user = self.store.get(apple_id)
-        if user is None:
-            return
-        new_dest = self._ask_directory(f"Neuen Ziel-Ordner für {apple_id} wählen:",
-                                       default=user.dest_base_path or None)
-        if not new_dest:
-            return
-        user.dest_base_path = new_dest
-        self.store.update(user)
-        self._rebuild_menu()
-        notify.notify("iCloud Sync", f"Zielordner für {apple_id} geändert.")
-
-    def _toggle_shared_photos(self, apple_id: str, _sender=None) -> None:
-        """Schaltet die Sicherung der geteilten Mediathek (-> SharedPhotos/) für den User um."""
-        user = self.store.get(apple_id)
-        if user is None:
-            return
-        user.sync_shared_photos = not user.sync_shared_photos
-        self.store.update(user)
-        self._rebuild_menu()
-        notify.notify("iCloud Sync",
-                      f"Geteilte Mediathek für {apple_id}: "
-                      f"{'wird gesichert (SharedPhotos/)' if user.sync_shared_photos else 'aus'}.")
-
-    def _toggle_contacts(self, apple_id: str, _sender=None) -> None:
-        """Schaltet die Kontakte-Sicherung (-> Contacts/) für den User um."""
-        user = self.store.get(apple_id)
-        if user is None:
-            return
-        user.sync_contacts = not user.sync_contacts
-        self.store.update(user)
-        self._rebuild_menu()
-        notify.notify("iCloud Sync",
-                      f"Kontakte für {apple_id}: {'werden gesichert' if user.sync_contacts else 'aus'}.")
 
     # -- Drive-Ausschlüsse ---------------------------------------------------
 
@@ -471,14 +371,6 @@ class SyncApp(rumps.App):
         state = "ausgeschlossen" if name in ex else "wieder dabei"
         notify.notify("iCloud Sync", f"Drive-Ordner ‚{name}': {state} ({apple_id}).")
 
-    def _remove_user(self, apple_id: str, _sender=None) -> None:
-        if not self._ask_yes_no(f"{apple_id} entfernen? (Backup-Dateien bleiben erhalten)", "Entfernen"):
-            return
-        self.store.remove(apple_id)
-        keychain.delete_password(apple_id)
-        keychain.delete_mail_password(apple_id)
-        self._rebuild_menu()
-
     # -- Log -----------------------------------------------------------------
 
     def _open_log(self, _sender=None) -> None:
@@ -496,167 +388,6 @@ class SyncApp(rumps.App):
             LOGGER.exception("Log konnte nicht im Finder angezeigt werden")
             rumps.alert("Log", f"Log-Datei:\n{log_path}")
 
-    # -- Konfiguration sichern/laden -----------------------------------------
-
-    def _export_config(self, _sender=None) -> None:
-        """Exportiert settings.json + users.json (ohne Passwörter) in einen gewählten Ordner."""
-        from .config.backup import backup_config_to
-
-        d = self._ask_directory("Ordner für den Konfigurations-Export wählen:")
-        if not d:
-            return
-        target = Path(d) / "icloud-sync-config"
-        n = backup_config_to(target)
-        if n:
-            notify.notify("iCloud Sync", f"Konfiguration exportiert ({n} Dateien) → {target}")
-        else:
-            rumps.alert("Export fehlgeschlagen",
-                        "Es konnten keine Konfigurationsdateien geschrieben werden.")
-
-    def _import_config(self, _sender=None) -> None:
-        """Importiert settings.json + users.json aus einem Ordner (überschreibt die aktuellen)."""
-        from .config.backup import restore_config_from
-
-        if not self._ask_yes_no(
-                "Konfiguration importieren? Aktuelle settings.json/users.json werden "
-                "überschrieben. Passwörter (Keychain) müssen ggf. neu gesetzt werden.",
-                "Konfiguration importieren"):
-            return
-        d = self._ask_directory("Ordner mit der gesicherten Konfiguration wählen:")
-        if not d:
-            return
-        n = restore_config_from(Path(d))
-        if not n:
-            rumps.alert("Import", "Im gewählten Ordner wurde keine settings.json/users.json gefunden.")
-            return
-        # Frisch laden und UI neu aufbauen.
-        self.settings = load_settings()
-        self.store = UsersStore.loaded()
-        self._reset_stale_running()
-        self._rebuild_menu()
-        notify.notify("iCloud Sync", f"Konfiguration importiert ({n} Dateien).")
-
-    # -- Fehler-E-Mail -------------------------------------------------------
-
-    def _error_email_menu(self) -> rumps.MenuItem:
-        """Untermenü: Fehler-Benachrichtigung per E-Mail (über lokales Relay)."""
-        parent = rumps.MenuItem("Fehler-E-Mail …")
-        toggle = rumps.MenuItem("Aktiv", callback=self._toggle_error_email)
-        toggle.state = 1 if self.settings.error_email_enabled else 0
-        parent.add(toggle)
-        parent.add(rumps.MenuItem("Empfänger…", callback=self._set_error_email_to))
-        parent.add(rumps.MenuItem("Relay-Host…", callback=self._set_smtp_host))
-        parent.add(rumps.MenuItem("Relay-Port…", callback=self._set_smtp_port))
-        parent.add(rumps.MenuItem("Test-E-Mail senden", callback=self._send_test_email))
-        info = rumps.MenuItem(f"An: {self.settings.error_email_to or '—'}  ·  "
-                              f"Relay: {self.settings.smtp_host}:{self.settings.smtp_port}")
-        info.set_callback(None)
-        parent.add(info)
-        return parent
-
-    def _toggle_error_email(self, sender) -> None:
-        if not self.settings.error_email_enabled and not self.settings.error_email_to:
-            rumps.alert("Empfänger fehlt", "Bitte zuerst einen Empfänger unter 'Empfänger…' setzen.")
-            return
-        self.settings.error_email_enabled = not self.settings.error_email_enabled
-        save_settings(self.settings)
-        sender.state = 1 if self.settings.error_email_enabled else 0
-        self._rebuild_menu()
-
-    def _set_error_email_to(self, _sender=None) -> None:
-        val = self._ask_text("E-Mail-Adresse für Fehlermeldungen (leer = aus):",
-                             "Fehler-E-Mail", default=self.settings.error_email_to)
-        if val is None:
-            return
-        self.settings.error_email_to = val
-        if not val:
-            self.settings.error_email_enabled = False
-        elif not self.settings.error_email_enabled:
-            self.settings.error_email_enabled = True  # Adresse gesetzt -> direkt aktiv
-        save_settings(self.settings)
-        self._rebuild_menu()
-        notify.notify("iCloud Sync", f"Fehler-E-Mail: {'an ' + val if val else 'deaktiviert'}.")
-
-    def _set_smtp_host(self, _sender=None) -> None:
-        val = self._ask_text("Mail-Relay Host/IP (z. B. 127.0.0.1):",
-                             "Fehler-E-Mail – Relay", default=self.settings.smtp_host)
-        if not val:
-            return
-        self.settings.smtp_host = val
-        save_settings(self.settings)
-        self._rebuild_menu()
-        notify.notify("iCloud Sync", f"Mail-Relay-Host: {val}")
-
-    def _set_smtp_port(self, _sender=None) -> None:
-        val = self._ask_text("Mail-Relay Port (z. B. 2525):",
-                             "Fehler-E-Mail – Relay", default=str(self.settings.smtp_port))
-        if val is None:
-            return
-        try:
-            port = int(val)
-            if not (1 <= port <= 65535):
-                raise ValueError
-        except ValueError:
-            rumps.alert("Ungültig", "Bitte einen Port zwischen 1 und 65535 eingeben.")
-            return
-        self.settings.smtp_port = port
-        save_settings(self.settings)
-        self._rebuild_menu()
-        notify.notify("iCloud Sync", f"Mail-Relay-Port: {port}")
-
-    def _send_test_email(self, _sender=None) -> None:
-        to = self.settings.error_email_to
-        if not to:
-            rumps.alert("Empfänger fehlt", "Bitte zuerst einen Empfänger unter 'Empfänger…' setzen.")
-            return
-        sender = self.settings.error_email_from or to
-
-        def _run():
-            ok = notify.send_mail(self.settings.smtp_host, int(self.settings.smtp_port), sender, to,
-                                  "iCloud Sync: Test-E-Mail",
-                                  "Test der Fehler-Benachrichtigung über das lokale Mail-Relay.\n"
-                                  "Wenn diese Mail ankommt, funktioniert die Zustellung.")
-            notify.notify("iCloud Sync",
-                          "Test-E-Mail eingeliefert." if ok else
-                          f"Test-E-Mail fehlgeschlagen ({self.settings.smtp_host}:{self.settings.smtp_port}) – läuft das Relay?")
-
-        self._spawn(_run)
-
-    # -- Einstellungen -------------------------------------------------------
-
-    def _open_settings(self, _sender) -> None:
-        val = self._ask_text("Sync-Intervall in Stunden:", "Einstellungen",
-                             default=str(self.settings.sync_interval_hours))
-        if val is None:
-            return
-        try:
-            hours = max(1, int(val))
-        except ValueError:
-            rumps.alert("Ungültig", "Bitte eine ganze Zahl (Stunden) eingeben.")
-            return
-        self.settings.sync_interval_hours = hours
-        save_settings(self.settings)
-        notify.notify("iCloud Sync", f"Sync-Intervall: alle {hours} h.")
-
-    def _set_sync_times(self, _sender) -> None:
-        val = self._ask_text(
-            "Feste Sync-Uhrzeiten (HH:MM, durch Komma getrennt; leer = Stunden-Intervall):",
-            "Sync-Zeiten", default=", ".join(self.settings.sync_times))
-        if val is None:
-            return
-        try:
-            times = parse_schedule(val)
-        except ValueError:
-            rumps.alert("Ungültig", "Bitte Uhrzeiten als HH:MM angeben, z. B. 07:30, 19:30.")
-            return
-        self.settings.sync_times = times
-        save_settings(self.settings)
-        self._rebuild_menu()
-        if times:
-            notify.notify("iCloud Sync", "Sync-Zeiten: " + ", ".join(times))
-        else:
-            notify.notify("iCloud Sync", f"Feste Zeiten aus – Intervall: alle {self.settings.sync_interval_hours} h.")
-
     def _quit(self, _sender) -> None:
         rumps.quit_application()
 
@@ -673,21 +404,6 @@ class SyncApp(rumps.App):
                       if self.settings.auto_sync_paused else "Auto-Sync fortgesetzt.")
 
     # -- Autostart -----------------------------------------------------------
-
-    def _toggle_autostart(self, sender) -> None:
-        if autostart.is_enabled():
-            autostart.disable()
-        else:
-            args = self._autostart_program_args()
-            if args is None:
-                rumps.alert(
-                    "Autostart nur im .app-Bundle",
-                    "Der Login-Autostart funktioniert nur fuer die gebaute App-Bundle-Version. "
-                    "Im Entwicklungsmodus (python -m src.app) ist er nicht verfuegbar.",
-                )
-                return
-            autostart.enable(args)
-        sender.state = 1 if autostart.is_enabled() else 0
 
     @staticmethod
     def _autostart_program_args() -> Optional[list[str]]:

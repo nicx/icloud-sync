@@ -44,13 +44,20 @@ Stand und können einzelne Dateien/Stände wiederherstellen.
 .venv/bin/python -m src.app        # startet die Menüleisten-App
 ```
 
-Beim ersten Start erscheint das Menüleisten-Icon. Über **„User hinzufügen…"** wird ein Apple-Account
-angelegt: Apple-ID, Ziel-Ordner (per **Finder-Dialog** auswählbar) und die Auswahl Drive/Photos/Mail.
-Für **Drive/Photos** wird das Apple-ID-Passwort abgefragt (nur Keychain) und Apple verlangt eine
-**2FA-Bestätigung** — der Code wird im Dialog eingegeben; die Trusted-Session wird danach persistiert
-(`…/sessions/<apple-id>/`), sodass folgende Starts meist ohne erneute 2FA auskommen. Für **Mail** wird
-stattdessen ein **app-spezifisches Passwort** abgefragt (siehe unten). Der Zielordner lässt sich später
-über **„Zielordner ändern…"** anpassen.
+Beim ersten Start erscheint das Menüleisten-Icon. Alle Einstellungen laufen über das native
+**Einstellungs-Fenster** (Menü **„Einstellungen…"**) mit Tabs **Allgemein**, **Sync-Plan**,
+**Fehler-E-Mail** und **Accounts** — so sieht man den gesetzten Zustand auf einen Blick statt in
+einer Popup-Kette. Im Tab **Accounts** legt **„Hinzufügen"** einen Apple-Account an: Apple-ID,
+Ziel-Ordner (per **Finder-Dialog**) und die Auswahl Drive/Photos/Geteilt/Kontakte/Mail. Für
+**Drive/Photos/Kontakte** wird das Apple-ID-Passwort abgefragt (nur Keychain) und Apple verlangt eine
+**2FA-Bestätigung** — der Code wird in einem Dialog eingegeben; die Trusted-Session wird danach
+persistiert (`…/sessions/<apple-id>/`), sodass folgende Starts meist ohne erneute 2FA auskommen. Für
+**Mail** wird stattdessen ein **app-spezifisches Passwort** abgefragt (siehe unten). Ziel-Ordner und
+Dienste lassen sich später über **„Bearbeiten…"** im selben Tab anpassen.
+
+> Im Menüleisten-Menü selbst bleiben nur die häufigen Aktionen (pro Account „Sync jetzt" und die
+> Drive-Ausschlüsse, „Alle jetzt synchronisieren", Auto-Sync pausieren, „Einstellungen…",
+> „Log anzeigen…").
 
 ### iCloud Mail (IMAP) einrichten
 
@@ -58,7 +65,7 @@ Apple lässt IMAP-Zugriff nur mit einem **app-spezifischen Passwort** zu (das no
 abgelehnt). Einmal pro Account:
 
 1. [appleid.apple.com](https://appleid.apple.com) → **Anmeldung & Sicherheit** → **App-spezifische Passwörter** → eines erzeugen.
-2. In der App im User-Untermenü **„Mail-App-Passwort setzen…"** (oder beim Anlegen) das Passwort eingeben.
+2. In der App im **Einstellungs-Fenster → Accounts → „Mail-Passwort…"** (oder beim Anlegen) das Passwort eingeben.
 
 Mail wird nach `Mail/<Ordner>/<uid>.eml` gespiegelt — **echte Ordnerstruktur** wie in iCloud Mail.
 Nachrichten werden mit `BODY.PEEK[]` geladen und bleiben dadurch **ungelesen**. Das **Empfangsdatum**
@@ -76,10 +83,10 @@ anhalten — geplante Läufe unterbleiben dann, **„Sync jetzt" bleibt aber man
 
 ### Sync-Zeitplan: Intervall oder feste Uhrzeiten
 
-Standardmäßig läuft der Auto-Sync im **Stunden-Intervall** (Menü **„Einstellungen…"**, Default
-alle 4 h). Alternativ lassen sich über **„Sync-Zeiten…"** **feste Uhrzeiten** (lokale Wandzeit,
-`HH:MM`, durch Komma getrennt — z. B. `07:30, 19:30`) angeben; dann gilt **statt** des Intervalls
-der Uhrzeit-Plan. Leeres Feld ⇒ zurück zum Intervall. Der Scheduler prüft alle 5 min, feuert also
+Im **Einstellungs-Fenster → Sync-Plan** wählt man zwischen **Stunden-Intervall** (Default alle 4 h)
+und **festen Uhrzeiten**: Häkchen „Feste Uhrzeiten verwenden" setzen und die Zeiten (lokale Wandzeit,
+`HH:MM`, durch Komma getrennt — z. B. `07:30, 19:30`) eintragen; dann gilt **statt** des Intervalls
+der Uhrzeit-Plan. Häkchen aus ⇒ zurück zum Intervall. Der Scheduler prüft alle 5 min, feuert also
 je Slot **einmal** innerhalb von ≤5 min nach der genannten Zeit. War der Mac zur Zeit im Sleep,
 wird der verpasste Slot beim nächsten Aufwachen **einmalig** nachgeholt (Catch-up).
 
@@ -92,8 +99,8 @@ Warten bis zum nächsten regulären Intervall.
 
 Apple-Sessions laufen periodisch ab (~2 Monate). Erkennt die App das, setzt sie den User-Status auf
 `needs_reauth`, zeigt einen **roten Indikator** im Menüleisten-Icon und schickt eine Notification.
-Über **„Re-Auth…"** im User-Untermenü wird mit einem neuen 2FA-Code die Session erneuert. Andere User
-laufen davon unbeeinflusst weiter.
+Über **Einstellungs-Fenster → Accounts → „Re-Auth…"** wird mit einem neuen 2FA-Code die Session
+erneuert. Andere User laufen davon unbeeinflusst weiter.
 
 ## Daten & Pfade
 
@@ -111,11 +118,11 @@ laufen davon unbeeinflusst weiter.
 Alle Läufe werden in eine **rotierende Log-Datei** geschrieben
 (`…/logs/icloud-sync.log`, 1 MB × 5) — in der Menüleisten-App die einzige verlässliche
 Quelle (stderr ist dort verloren). Menüpunkt **„Log anzeigen…"** öffnet sie im Finder.
-Schlägt ein Dienst fehl, steht der **Grund im Klartext** im User-Untermenü
-(„⚠️ Letzter Fehler: …") und in einer Notification (auch Drive/Photos-Fehler).
+Schlägt ein Dienst fehl, steht der **Grund im Klartext** im Account-Menü („⚠️ Letzter Fehler: …"),
+in der Accounts-Tabelle des Einstellungs-Fensters und in einer Notification (auch Drive/Photos-Fehler).
 
-**Fehler-E-Mail (optional):** Über das Menü **„Fehler-E-Mail …"** lässt sich eine
-Benachrichtigung per Mail aktivieren (Empfänger sowie **Relay-Host/-Port** setzen,
+**Fehler-E-Mail (optional):** Im **Einstellungs-Fenster → Fehler-E-Mail** lässt sich eine
+Benachrichtigung per Mail aktivieren (Empfänger/Absender sowie **Relay-Host/-Port** setzen,
 „Test-E-Mail senden" zum Prüfen).
 Bei `error`/`needs_reauth` geht dann eine Mail raus — **nur bei neuem/geändertem Problem**
 (kein Spam bei wiederholtem gleichem Fehler). Der Versand läuft per einfachem SMTP an ein
@@ -128,7 +135,7 @@ App selbst kennt keine Mail-Zugangsdaten. Einstellungen (`error_email_to`, `smtp
 
 `settings.json` + `users.json` (beide **ohne Passwörter** — die liegen im Keychain) werden
 bei jedem Lauf automatisch nach `<dest>/_config-backup/` kopiert (von den UNAS-Snapshots
-versioniert). Zusätzlich im Menü **„Konfiguration …"** → „Exportieren…/Importieren…" für den
+versioniert). Zusätzlich im **Einstellungs-Fenster → Allgemein** → „Exportieren…/Importieren…" für den
 Umzug auf einen neuen Mac. Session-Tokens werden bewusst **nicht** gesichert; nach einem
 Import sind die Passwörter ggf. neu zu setzen.
 
@@ -144,13 +151,13 @@ Import sind die Passwörter ggf. neu zu setzen.
 ```
 
 **Kontakte:** Pro Kontakt eine **vCard** (`.vcf`, importierbar) **und** das **Roh-JSON**
-(`.json`, verlustfrei). Aktivierbar beim Anlegen oder im User-Untermenü **„Kontakte sichern"**;
-nutzt die Web-Session (kein Extra-Passwort). Spiegel mit Schutz gegen Massenlöschen (leeres/
+(`.json`, verlustfrei). Aktivierbar beim Anlegen oder über **Accounts → „Bearbeiten…"** (Häkchen
+„Kontakte"); nutzt die Web-Session (kein Extra-Passwort). Spiegel mit Schutz gegen Massenlöschen (leeres/
 fehlerhaftes Ergebnis ⇒ kein Löschen).
 
-**Geteilte Mediathek:** Standardmäßig wird nur die **persönliche** Mediathek gesichert. Über das
-User-Untermenü **„Geteilte Mediathek sichern"** lässt sich zusätzlich die iCloud Shared Photo
-Library nach `SharedPhotos/` spiegeln (getrennter Prune). Da Familienmitglieder sich **dieselbe**
+**Geteilte Mediathek:** Standardmäßig wird nur die **persönliche** Mediathek gesichert. Über
+**Accounts → „Bearbeiten…"** (Häkchen „Geteilte Mediathek") lässt sich zusätzlich die iCloud Shared
+Photo Library nach `SharedPhotos/` spiegeln (getrennter Prune). Da Familienmitglieder sich **dieselbe**
 geteilte Bibliothek teilen, sollte das nur bei **einem** Account aktiviert werden, sonst wird sie
 doppelt gesichert. (Ohne diese Option verschwindet ein von „Persönlich" nach „Gemeinsam"
 verschobenes Foto aus dem `Photos/`-Spiegel.)
@@ -197,23 +204,33 @@ codesign --force --deep --sign - "dist/iCloud Sync.app"
 Das Bundle ist eine reine **Menüleisten-App** (`LSUIElement` → kein Dock-Icon), Bundle-ID
 `de.nicx.icloud-sync`. Standardmäßig **ad-hoc signiert** (kein Apple-Developer-Zertifikat).
 
-### Wiederkehrende Schlüsselbund-Abfragen vermeiden (stabile Signatur)
+### Wiederkehrende Schlüsselbund-Abfragen
 
-Ad-hoc-Signaturen haben **keine stabile Code-Identität** → nach **jedem Update** fragt macOS
-erneut nach dem Schlüsselbund (pro Account je `icloud-sync` und `icloud-sync-mail`); „Immer
-erlauben" hält nur bis zum nächsten Build. Abhilfe: mit **derselben** Identität signieren.
+Der Passwort-Zugriff läuft über das Apple-signierte **`/usr/bin/security`** (siehe
+`auth/keychain.py`), nicht in-process. Dadurch hängt die Schlüsselbund-Freigabe an der
+**stabilen** Identität von `security` statt an der App — beim **ersten** Lesen je Account fragt
+macOS einmal (pro Eintrag `icloud-sync`/`icloud-sync-mail`); dort **„Immer erlauben"** wählen,
+dann ist **dauerhaft** Ruhe, auch über alle künftigen Rebuilds/Updates.
 
-1. Einmalig ein **self-signed Code-Signing-Zertifikat** anlegen: *Schlüsselbundverwaltung →
-   Menü „Zertifikatsassistent" → „Zertifikat erstellen…"*, Name z. B. `iCloud Sync Selfsign`,
-   Identitätstyp „Selbstsigniertes Stammzertifikat", **Zertifikatstyp „Codesignatur"**.
+> Hintergrund: Bei in-process-Zugriff band macOS „Immer erlauben" an die App-Code-Identität, die
+> bei jedem Rebuild wechselt (self-signed, keine Apple-Team-ID) → Abfrage nach jedem Update. Eine
+> stabile (self-signed) Signatur via `CODESIGN_IDENTITY` (s. u.) hilft **Gatekeeper**, löst aber
+> das Keychain-Problem **nicht** — das tut der Zugriff über `security`.
+
+### Stabile Code-Signatur (Gatekeeper)
+
+Empfohlen, um wiederholte Gatekeeper-/„App geändert"-Hinweise zu vermeiden: mit einer **stabilen
+self-signed Identität** signieren statt ad-hoc.
+
+1. Einmalig ein **self-signed Code-Signing-Zertifikat** anlegen (*Schlüsselbundverwaltung →
+   Zertifikatsassistent → „Zertifikat erstellen…"*, Name z. B. `iCloud Sync Selfsign`,
+   „Selbstsigniertes Stammzertifikat", Zertifikatstyp **„Codesignatur"**).
 2. Bauen mit dieser Identität:
    ```bash
    CODESIGN_IDENTITY="iCloud Sync Selfsign" bash build/build.sh
    ```
-   Danach App starten und bei der Schlüsselbund-Abfrage **„Immer erlauben"** wählen — das hält
-   nun auch über künftige Updates (solange mit demselben Zertifikat signiert wird).
 
-Ohne `CODESIGN_IDENTITY` wird weiterhin ad-hoc signiert (und bei jedem Update neu gefragt).
+Ohne `CODESIGN_IDENTITY` wird weiterhin ad-hoc signiert.
 
 > `pyicloud` ist bewusst auf eine feste Version gepinnt; ein Upgrade nur gezielt durchführen
 > und danach einen echten Account-Smoke-Test machen (die Tests sind mock-basiert) — Details
@@ -231,13 +248,12 @@ Eigengebrauch:
   xattr -dr com.apple.quarantine "dist/iCloud Sync.app"
   ```
 
-> Hinweis: Ad-hoc-Signierung **vermeidet die wiederkehrenden Keychain-Abfragen nicht** — dafür
-> braucht es eine stabile Signatur-Identität (siehe „Wiederkehrende Schlüsselbund-Abfragen
-> vermeiden" oben).
+> Keychain-Abfragen sind davon unabhängig — siehe „Wiederkehrende Schlüsselbund-Abfragen" oben
+> (Zugriff über `/usr/bin/security`).
 
 ### Autostart beim Login
 
-Im Menü **„Beim Login starten"** umschaltbar. Der Toggle legt einen LaunchAgent unter
+Im **Einstellungs-Fenster → Allgemein** über „Beim Login starten" umschaltbar. Der Toggle legt einen LaunchAgent unter
 `~/Library/LaunchAgents/de.nicx.icloud-sync.plist` an bzw. entfernt ihn. Er funktioniert nur
 für das gebaute `.app`-Bundle (nicht im `python -m src.app`-Entwicklungsmodus).
 

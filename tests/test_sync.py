@@ -643,6 +643,19 @@ def test_settings_auto_sync_paused_roundtrip():
     save_settings(Settings())  # zurücksetzen
 
 
+def test_user_services_summary():
+    """Dienste-Kurzliste (Menü + Accounts-Tabelle) bildet aktive Flags korrekt ab."""
+    from src.app import user_services_summary
+    from src.config.users import User, UserStatus
+
+    u = User(apple_id="x@icloud.com", sync_drive=True, sync_photos=True, sync_shared_photos=True,
+             sync_contacts=False, sync_mail=True, dest_base_path="/tmp", status=UserStatus.IDLE)
+    check(user_services_summary(u) == "Drive, Photos, +Geteilt, Mail", "ui: services summary aktive Dienste")
+    off = User(apple_id="y@icloud.com", sync_drive=False, sync_photos=False, sync_shared_photos=False,
+               sync_contacts=False, sync_mail=False, dest_base_path="/tmp", status=UserStatus.IDLE)
+    check(user_services_summary(off) == "—", "ui: services summary keine Dienste -> —")
+
+
 def test_settings_sync_times_roundtrip():
     """sync_times überleben save/load; Default ist leere Liste."""
     from src.config.settings import Settings, load_settings, save_settings
@@ -868,6 +881,7 @@ if __name__ == "__main__":
     test_engine_clears_last_error_on_success()
     test_user_last_error_roundtrip()
     test_settings_auto_sync_paused_roundtrip()
+    test_user_services_summary()
     test_settings_sync_times_roundtrip()
     test_parse_schedule()
     test_due_by_schedule()

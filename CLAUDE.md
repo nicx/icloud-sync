@@ -67,10 +67,17 @@ In-App-Toggle (LaunchAgent).
 
 Trennung im Code, NICHT in separate Prozesse:
 
-- **UI-Schicht** (`src/app.py`, rumps): Status anzeigen, User verwalten, „Sync jetzt",
-  Re-Auth-/Mail-Passwort-Prompts, Live-Fortschritt (Spinner + Counts). Hält keine
-  Sync-Logik. Syncs laufen in einem Hintergrund-Thread (Daemon), serialisiert über ein
-  `threading.Lock` (keine überlappenden Läufe).
+- **UI-Schicht** (`src/app.py`, rumps): Menüleisten-Icon/-Menü (schlank: pro Account „Sync jetzt"
+  + Drive-Ausschlüsse, „Alle jetzt synchronisieren", Auto-Sync pausieren, „Einstellungen…",
+  „Log anzeigen…"), Live-Fortschritt (Spinner + Counts), Scheduler. Hält keine Sync-Logik. Syncs
+  laufen in einem Hintergrund-Thread (Daemon), serialisiert über ein `threading.Lock` (keine
+  überlappenden Läufe).
+- **Einstellungs-Fenster** (`src/prefs_window.py` + `src/ui_appkit.py`, **reines pyobjc/AppKit**):
+  ein natives Fenster mit Tabs Allgemein/Sync-Plan/Fehler-E-Mail/Accounts — zeigt alle
+  Einstellungen auf einen Blick und ersetzt die frühere Popup-Kette. Bewusst **rumps-frei** und nur
+  über die schmale `PrefsFacade` (in `app.py`) an Engine/Config/Keychain gekoppelt. **Ziel: UI-
+  Konvergenz** auf eine einzige pyobjc-UI — Phase 3 ersetzt später auch das rumps-Status-Item durch
+  ein natives `NSStatusItem` (dann kann das Fenster unverändert weiterlaufen).
 - **Scheduler** (in `app.py`): zwei `rumps.Timer`. Ein langsamer Tick (300 s) prüft
   „fällige" User und stößt den Sync an; ein schneller Tick (1 s) aktualisiert nur die
   Live-Anzeige. Fälligkeit per `_is_due`: **entweder** Stunden-Intervall **oder** feste
@@ -109,7 +116,9 @@ icloud-sync/
   requirements.txt         # Laufzeit-Abhängigkeiten
   requirements-build.txt   # zusätzlich für den py2app-Build
   src/
-    app.py                 # rumps-Entrypoint, Menüleiste, Scheduler, Live-Fortschritt
+    app.py                 # rumps-Entrypoint, Menüleiste, Scheduler, Live-Fortschritt, PrefsFacade
+    prefs_window.py        # natives Einstellungs-Fenster (pyobjc/AppKit): Allgemein/Sync-Plan/Fehler-E-Mail/Accounts
+    ui_appkit.py           # geteilte AppKit-Helfer (Alert/Eingabe/Ordnerdialog, Main-Thread-Dispatch) – rumps-frei
     schedule.py            # reine Planungslogik für feste Sync-Uhrzeiten (parse_schedule, due_by_schedule)
     notify.py              # macOS-Notifications (rumps / pync-Fallback)
     menubar_icon.py        # Template-Icons (gefüllt=aktiv / umrandet=pausiert) fürs Menüleisten-Icon
@@ -168,6 +177,15 @@ Zwei Keychain-Services, Account-Schlüssel ist jeweils die Apple-ID:
 
 Beim Lesen wird transparent auf die Alt-Services (`icloud-backup` / `-mail` vor der
 Umbenennung) zurückgegriffen und der Eintrag migriert.
+
+**Zugriff über `/usr/bin/security` (nicht in-process):** `auth/keychain.py` ruft das
+Apple-signierte `security`-Tool als Subprozess auf, statt den Keychain in-process (früher
+`keyring`) zu lesen. Grund: bei in-process-Zugriff bindet macOS „Immer erlauben" an die
+**Code-Identität der App**; die ändert sich bei jedem Rebuild (self-signed, **keine Team-ID**) →
+Prompt nach jedem Update. `security` hat eine **stabile** Identität → nach einmaligem „Immer
+erlauben" für `security` ist dauerhaft Ruhe. Passwörter werden **base64-kodiert** abgelegt
+(`b64:`-Marker), weil `security -w` Nicht-ASCII sonst als Hex ausgibt; Alt-Einträge (roh/Hex)
+werden beim ersten Lesen erkannt und auf das neue Format normalisiert.
 
 ## Inkrementelle Logik (dateibasiert, kein Manifest)
 
@@ -284,10 +302,12 @@ ggf. erneutes Setzen der Passwörter.
 2. **Apple-Throttling** – exponentielles Backoff (`util.with_retries`), Retry-Limit.
 3. **Gatekeeper/Quarantäne** – unsigniertes/ad-hoc-signiertes `.app` → README:
    Rechtsklick→Öffnen bzw. `xattr -dr com.apple.quarantine`.
-4. **Keychain-Prompts bei Updates** – **Ad-hoc-Signierung ist die Ursache**: keine stabile
-   Code-Identität ⇒ nach jedem Build passt die Keychain-ACL nicht mehr ⇒ erneute Abfrage (pro
-   Account `icloud-sync` + `icloud-sync-mail`). Abhilfe: mit stabiler (self-signed) Identität
-   signieren via `CODESIGN_IDENTITY` (siehe Verpackung/README); dann hält „Immer erlauben".
+4. **Keychain-Prompts bei Updates** – Ursache: **in-process-Zugriff** band „Immer erlauben" an
+   die App-Code-Identität, die bei jedem Rebuild wechselt (self-signed, keine Team-ID). Eine
+   stabile (self-signed) Signatur hilft **Gatekeeper**, aber **nicht** dem Keychain über Rebuilds.
+   Abhilfe (umgesetzt): Zugriff über das Apple-signierte **`/usr/bin/security`** (stabile
+   Identität, Einträge mit `-T /usr/bin/security`) — nach einmaligem „Immer erlauben" für
+   `security` ist dauerhaft Ruhe. Siehe „Credentials".
 5. **UNAS-Mount fehlt** – `engine.is_mount_available` prüft vor dem Sync; sonst sauberer
    Abbruch + Notification, kein Crash.
 5b. **Netz nach Reboot noch nicht oben** – Autostart + sofort feuernder rumps-Timer würden
