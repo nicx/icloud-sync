@@ -269,4 +269,4 @@ ohne Crash, andere User laufen weiter.
 ## Lizenz / Maintainer
 
 - **Maintainer:** nicx
-- **Lizenz:** GPLv3 (siehe [LICENSE](LICENSE))
+- **Lizenz:** MIT (siehe [LICENSE](LICENSE))

@@ -53,7 +53,7 @@ OPTIONS = {
         "CFBundleIdentifier": "de.nicx.icloud-sync",
         "CFBundleShortVersionString": "0.1.0",
         "CFBundleVersion": "0.1.0",
-        "NSHumanReadableCopyright": "GPLv3 – nicx",
+        "NSHumanReadableCopyright": "MIT – nicx",
     },
     # Pakete vollständig einbetten (Quellpaket + Abhängigkeiten mit Binär-/Datenanteilen).
     # Pakete, die als Ganzes eingebettet werden (dynamische Importe / Datendateien).
