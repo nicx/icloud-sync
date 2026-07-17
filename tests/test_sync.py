@@ -423,6 +423,7 @@ def test_photos_shared_resilience():
 def test_contacts():
     dest = tempfile.mkdtemp(prefix="contacts_")
     c1 = {"contactId": "C1", "firstName": "Max", "lastName": "Mustermann",
+          "nickName": "Maxi",
           "phones": [{"label": "MOBILE", "field": "+49 170 1"}],
           "emailAddresses": [{"label": "WORK", "field": "max@example.com"}]}
     c2 = {"contactId": "C2", "firstName": "Erika", "companyName": "ACME"}
@@ -436,6 +437,8 @@ def test_contacts():
     check(s.downloaded == 2, f"contacts: 2 neu (war {s.downloaded})")
     vcf = [f for f in files if f.startswith("Max Mustermann") and f.endswith(".vcf")]
     check(vcf and b"TEL;TYPE=MOBILE:+49 170 1" in read(os.path.join(cdir, vcf[0])), "contacts: vCard-Telefon")
+    # Apple liefert den Spitznamen als "nickName" (camelCase) – nicht "nickname"
+    check(vcf and b"NICKNAME:Maxi" in read(os.path.join(cdir, vcf[0])), "contacts: vCard-Spitzname")
 
     # 2. Lauf unverändert -> skip
     s2 = contacts.sync_contacts(api, dest, "c@example.com")

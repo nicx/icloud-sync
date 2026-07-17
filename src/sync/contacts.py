@@ -154,8 +154,8 @@ def _vcard(contact: dict) -> str:
         lines.append("ORG:" + _esc(org))
     if g("jobTitle"):
         lines.append("TITLE:" + _esc(g("jobTitle")))
-    if g("nickname"):
-        lines.append("NICKNAME:" + _esc(g("nickname")))
+    if g("nickName"):
+        lines.append("NICKNAME:" + _esc(g("nickName")))
 
     for ph in g("phones") or []:
         num = ph.get("field")
