@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Optional, TypeVar
@@ -23,7 +24,10 @@ T = TypeVar("T")
 CHUNK_SIZE = 1 << 20
 
 # HTTP-Statuscodes, bei denen wir mit Backoff erneut versuchen (Throttling/transient).
-_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+# 420 = Apples "Invalid sync token" (Contacts): der gerade von /co/startup ausgestellte
+# syncToken wird beim Folge-Request abgelehnt. Serverseitig, transient — ein neuer Versuch
+# holt einen frischen Token und läuft durch.
+_RETRYABLE_STATUS = {420, 429, 500, 502, 503, 504}
 
 
 def safe_component(name: str) -> str:
@@ -173,6 +177,19 @@ def needs_download(dest: Path, size: Optional[int], date_modified: Optional[date
     return False
 
 
+def _norm_path(path: Path) -> str:
+    """Pfad als Unicode-normalisierter String — Vergleichsform für Datei-Mengen.
+
+    Namen mit zerlegbaren Zeichen (ä, ö, ü, é …) kommen aus ``os.listdir`` je nach
+    Dateisystem in **NFD** zurück, während wir sie in **NFC** erzeugen (so liefert Apple
+    sie). Ein reiner String-/Path-Vergleich schlägt dann fehl, obwohl dieselbe Datei
+    gemeint ist — beim SMB-Ziel real beobachtet: ``prune_extra`` hat die gerade selbst
+    geschriebene Datei wieder gelöscht (jeder Lauf: neu schreiben -> löschen -> ...).
+    Der Lookup selbst (``exists``/``stat``) ist normalisierungstolerant, der Vergleich nicht.
+    """
+    return unicodedata.normalize("NFC", str(path))
+
+
 def prune_extra(root: Path, expected: set[Path]) -> int:
     """Spiegel-Helfer: löscht unter ``root`` alle Dateien, die NICHT in ``expected`` liegen.
 
@@ -185,12 +202,12 @@ def prune_extra(root: Path, expected: set[Path]) -> int:
     """
     if not root.is_dir():
         return 0
-    expected_resolved = {p.resolve() for p in expected}
+    expected_resolved = {_norm_path(p.resolve()) for p in expected}
     deleted = 0
     for dirpath, _dirnames, filenames in os.walk(root):
         for name in filenames:
             fpath = Path(dirpath) / name
-            if fpath.resolve() in expected_resolved:
+            if _norm_path(fpath.resolve()) in expected_resolved:
                 continue
             try:
                 fpath.unlink()

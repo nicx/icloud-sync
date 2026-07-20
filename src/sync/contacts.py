@@ -54,7 +54,9 @@ def sync_contacts(api, dest_base_path: str, apple_id: str, progress_cb=None) -> 
     _emit(stats, progress_cb)
 
     try:
-        contacts = api.contacts.all
+        # ``all`` ist eine Property, die pro Zugriff neu lädt (startup -> contacts) — ein
+        # Retry holt also einen frischen syncToken (Apple wirft sporadisch 420).
+        contacts = util.with_retries(lambda: api.contacts.all, label=f"Contacts {apple_id}")
     except Exception as exc:  # noqa: BLE001
         LOGGER.error("Kontakte nicht lesbar für %s: %s", apple_id, exc)
         stats.errors += 1
@@ -93,9 +95,12 @@ def _sync_one(contact: dict, dest: Path, stats: ContactStats, expected: set) -> 
     cid = contact.get("contactId") or hashlib.sha1(
         json.dumps(contact, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     short = hashlib.sha1(str(cid).encode("utf-8")).hexdigest()[:10]
-    base = dest / f"{_display_name(contact)}_{short}"
-    json_path = base.with_suffix(".json")
-    vcf_path = base.with_suffix(".vcf")
+    # Endung anhängen statt with_suffix(): Punkte im Namen ("Dr.", "St.", Initialen) gelten
+    # sonst als Suffix und with_suffix() würde Namensrest UND Kollisions-Hash abschneiden
+    # ("Arzt Dr. Mueller_1a2b3c4d5e" -> "Arzt Dr.json").
+    stem = f"{_display_name(contact)}_{short}"
+    json_path = dest / f"{stem}.json"
+    vcf_path = dest / f"{stem}.vcf"
     expected.add(json_path)
     expected.add(vcf_path)
 

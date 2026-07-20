@@ -19,7 +19,8 @@ os.environ["HOME"] = tempfile.mkdtemp(prefix="iclbk_test_home_")
 import sys
 sys.path.insert(0, os.getcwd())
 
-from src.sync import drive, photos, mail, contacts, engine  # noqa: E402
+from pathlib import Path  # noqa: E402
+from src.sync import drive, photos, mail, contacts, engine, util  # noqa: E402
 from src.config.users import User, UserStatus  # noqa: E402
 
 # Tests laufen ohne Netz: Erreichbarkeitsprüfung global auf "online" setzen, damit run_user
@@ -459,6 +460,45 @@ def test_contacts():
     s5 = contacts.sync_contacts(FakeApi(contacts_data=[]), dest, "c@example.com")
     check(s5.deleted == 0 and len(listdir(cdir)) == 2, "contacts Guard: leere Liste -> kein Löschen")
 
+    # Punkt im Namen ("Dr.") darf Namensrest + Kollisions-Hash nicht abschneiden:
+    # with_suffix() haette "Arzt Dr. Mueller_<hash>.json" zu "Arzt Dr.json" gemacht.
+    dest2 = tempfile.mkdtemp(prefix="contacts_dot_")
+    dot1 = {"contactId": "D1", "firstName": "Arzt Dr.", "lastName": "Mueller"}
+    dot2 = {"contactId": "D2", "firstName": "Arzt Dr.", "lastName": "Schmidt"}
+    contacts.sync_contacts(FakeApi(contacts_data=[dot1, dot2]), dest2, "c@example.com")
+    dfiles = sorted(listdir(os.path.join(dest2, "Contacts")))
+    check(len(dfiles) == 4, f"contacts Punkt-Name: 4 Dateien statt Kollision ({dfiles})")
+    check(all(f.startswith("Arzt Dr. Mueller_") or f.startswith("Arzt Dr. Schmidt_") for f in dfiles),
+          f"contacts Punkt-Name: voller Name + Hash erhalten ({dfiles})")
+
+    # Apple wirft bei Contacts sporadisch 420 "Invalid sync token" -> retrybar
+    class Boom(Exception):
+        def __init__(self):
+            super().__init__("Client Error (420) (420): Invalid sync token")
+            self.code = 420
+
+    class FlakyContacts:
+        def __init__(self):
+            self.calls = 0
+
+        @property
+        def all(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise Boom()
+            return [c1]
+
+    class FlakyApi:
+        def __init__(self):
+            self.contacts = FlakyContacts()
+
+    dest3 = tempfile.mkdtemp(prefix="contacts_420_")
+    fapi = FlakyApi()
+    s6 = contacts.sync_contacts(fapi, dest3, "c@example.com")
+    check(s6.errors == 0 and s6.downloaded == 1,
+          f"contacts 420: Retry rettet den Lauf (err={s6.errors}, dl={s6.downloaded})")
+    check(fapi.contacts.calls == 2, f"contacts 420: genau 1 Wiederholung (calls={fapi.contacts.calls})")
+
 
 # --- Mail -------------------------------------------------------------------
 
@@ -865,7 +905,31 @@ def test_config_backup_restore():
     save_settings(Settings())  # zurücksetzen
 
 
+def test_prune_unicode_normalisierung():
+    """Dateien mit ä/ö/ü/é dürfen nicht weggeprunt werden, nur weil das Dateisystem
+    den Namen in NFD zurückgibt, während ``expected`` ihn in NFC enthält (SMB-Ziel)."""
+    import unicodedata
+    root = Path(tempfile.mkdtemp(prefix="prune_uni_"))
+
+    # So verhält sich das SMB-Ziel: geschrieben wird NFC, auf der Platte liegt NFD.
+    nfc = unicodedata.normalize("NFC", "Müller_abc123.json")
+    nfd = unicodedata.normalize("NFD", nfc)
+    check(nfc != nfd, "prune-unicode: Testdaten unterscheiden sich in NFC/NFD")
+    (root / nfd).write_bytes(b"x")
+
+    # expected enthält den NFC-Pfad — dieselbe Datei, andere Normalform.
+    deleted = util.prune_extra(root, {root / nfc})
+    check(deleted == 0, f"prune-unicode: NFD-Datei bleibt trotz NFC-expected (gelöscht={deleted})")
+    check((root / nfd).exists() or (root / nfc).exists(), "prune-unicode: Datei noch da")
+
+    # Gegenprobe: wirklich Überzähliges wird weiterhin gelöscht.
+    (root / "wirklich_ueberzaehlig.json").write_bytes(b"y")
+    deleted2 = util.prune_extra(root, {root / nfc})
+    check(deleted2 == 1, f"prune-unicode: echter Ueberhang wird geloescht (war {deleted2})")
+
+
 if __name__ == "__main__":
+    test_prune_unicode_normalisierung()
     test_drive()
     test_drive_excludes()
     test_drive_excludes_nested()
