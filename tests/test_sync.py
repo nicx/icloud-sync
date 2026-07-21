@@ -905,6 +905,47 @@ def test_config_backup_restore():
     save_settings(Settings())  # zurücksetzen
 
 
+def test_contacts_retry_fenster():
+    """Das 420-Retry-Fenster muss den im Feld beobachteten Ausfall (~15 s reichten nicht)
+    ueberbrücken: 5 Versuche ab 3 s = 3+6+12+24 = 45 s Wartezeit."""
+    class Boom(Exception):
+        def __init__(self):
+            super().__init__("Client Error (420) (420): Invalid sync token")
+            self.code = 420
+
+    wartezeiten = []
+    versuche = {"n": 0}
+
+    def immer_420():
+        versuche["n"] += 1
+        raise Boom()
+
+    try:
+        util.with_retries(immer_420, attempts=contacts._RETRY_ATTEMPTS,
+                          base_delay=contacts._RETRY_BASE_DELAY,
+                          sleep=wartezeiten.append, label="test")
+    except Boom:
+        pass
+
+    check(versuche["n"] == 5, f"retry-fenster: 5 Versuche (waren {versuche['n']})")
+    check(wartezeiten == [3.0, 6.0, 12.0, 24.0], f"retry-fenster: Backoff-Folge ({wartezeiten})")
+    check(sum(wartezeiten) == 45.0, f"retry-fenster: ~45s ueberbrueckt (waren {sum(wartezeiten)}s)")
+
+    # Der reale Fall: 4 Fehlschlaege, der 5. Versuch klappt -> Lauf gerettet.
+    zaehler = {"n": 0}
+
+    def klappt_beim_fuenften():
+        zaehler["n"] += 1
+        if zaehler["n"] < 5:
+            raise Boom()
+        return "ok"
+
+    res = util.with_retries(klappt_beim_fuenften, attempts=contacts._RETRY_ATTEMPTS,
+                            base_delay=contacts._RETRY_BASE_DELAY,
+                            sleep=lambda _: None, label="test")
+    check(res == "ok", "retry-fenster: 5. Versuch rettet den Lauf")
+
+
 def test_prune_unicode_normalisierung():
     """Dateien mit ä/ö/ü/é dürfen nicht weggeprunt werden, nur weil das Dateisystem
     den Namen in NFD zurückgibt, während ``expected`` ihn in NFC enthält (SMB-Ziel)."""
@@ -929,6 +970,7 @@ def test_prune_unicode_normalisierung():
 
 
 if __name__ == "__main__":
+    test_contacts_retry_fenster()
     test_prune_unicode_normalisierung()
     test_drive()
     test_drive_excludes()

@@ -26,6 +26,14 @@ from . import util
 LOGGER = logging.getLogger(__name__)
 _PROGRESS_EVERY = 100
 
+# Apple weist den gerade selbst ausgestellten syncToken sporadisch mit 420 ab. Das
+# Standard-Fenster (4 Versuche ab 2 s ≈ 14 s) reichte im Feld einmal nicht — der Token
+# blieb länger ungültig (annabell, 2026-07-20 22:21, alle Versuche futsch). 5 Versuche
+# ab 3 s überbrücken ~45 s; das bleibt weit von "Apple hämmern" entfernt, weil jeder
+# Versuch ohnehin nur zwei GETs kostet.
+_RETRY_ATTEMPTS = 5
+_RETRY_BASE_DELAY = 3.0
+
 
 @dataclass
 class ContactStats:
@@ -56,7 +64,12 @@ def sync_contacts(api, dest_base_path: str, apple_id: str, progress_cb=None) -> 
     try:
         # ``all`` ist eine Property, die pro Zugriff neu lädt (startup -> contacts) — ein
         # Retry holt also einen frischen syncToken (Apple wirft sporadisch 420).
-        contacts = util.with_retries(lambda: api.contacts.all, label=f"Contacts {apple_id}")
+        contacts = util.with_retries(
+            lambda: api.contacts.all,
+            attempts=_RETRY_ATTEMPTS,
+            base_delay=_RETRY_BASE_DELAY,
+            label=f"Contacts {apple_id}",
+        )
     except Exception as exc:  # noqa: BLE001
         LOGGER.error("Kontakte nicht lesbar für %s: %s", apple_id, exc)
         stats.errors += 1
