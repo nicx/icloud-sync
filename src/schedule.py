@@ -33,6 +33,19 @@ def parse_schedule(text: str) -> list[str]:
     return sorted(times)
 
 
+def effective_times(user_times: Optional[list], global_times: Optional[list]) -> list[str]:
+    """Welcher Uhrzeit-Plan gilt für einen User: eigener schlägt globalen.
+
+    Ein **eigener** Plan (``user.sync_times``) hat Vorrang; ist er leer, gilt der globale
+    Plan aus den Settings. Sind beide leer, greift beim Aufrufer das Stunden-Intervall.
+
+    Sinn: Der Aufwand pro Lauf ist fix (voller Server-Walk, unabhängig von der Änderungs-
+    menge). Kleine Accounts kosten Sekunden und dürfen oft laufen, ein großer Account
+    kostet eine Stunde und bleibt selten — das lässt sich global nicht ausdrücken.
+    """
+    return list(user_times or []) or list(global_times or [])
+
+
 def due_by_schedule(times: list[str], last_run_iso: Optional[str], now: datetime) -> bool:
     """True, wenn nach festem Uhrzeit-Plan ein Lauf fällig ist.
 

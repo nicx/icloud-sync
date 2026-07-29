@@ -175,8 +175,8 @@ class PreferencesWindowController(NSObject):
         table = NSTableView.alloc().initWithFrame_(NSMakeRect(0, 0, 478, 262))
         table.setUsesAlternatingRowBackgroundColors_(True)
         for ident, title, width in (("account", "Account", 165), ("status", "Status", 70),
-                                    ("services", "Dienste", 150), ("dest", "Ziel", 200),
-                                    ("error", "Letzter Fehler", 200)):
+                                    ("services", "Dienste", 150), ("plan", "Plan", 130),
+                                    ("dest", "Ziel", 200), ("error", "Letzter Fehler", 200)):
             col = NSTableColumn.alloc().initWithIdentifier_(ident)
             col.headerCell().setStringValue_(title)
             col.setWidth_(width)
@@ -191,7 +191,7 @@ class PreferencesWindowController(NSObject):
         row1 = [("Hinzufügen", b"addAccount:"), ("Bearbeiten…", b"editAccount:"),
                 ("Entfernen…", b"removeAccount:"), ("Sync jetzt", b"syncAccount:")]
         row2 = [("Re-Auth…", b"reauthAccount:"), ("Mail-Passwort…", b"mailPwAccount:"),
-                ("Drive-Ausschlüsse…", b"driveExcludesAccount:")]
+                ("Drive-Ausschlüsse…", b"driveExcludesAccount:"), ("Sync-Plan…", b"syncTimesAccount:")]
         for row, y in ((row1, 44), (row2, 10)):
             x = 16
             for title, action in row:
@@ -328,6 +328,8 @@ class PreferencesWindowController(NSObject):
             return u.status.value if isinstance(u.status, UserStatus) else str(u.status)
         if ident == "services":
             return self.facade.services_summary(u)
+        if ident == "plan":
+            return ", ".join(u.sync_times) if u.sync_times else "global"
         if ident == "dest":
             return u.dest_base_path or "—"
         if ident == "error":
@@ -425,6 +427,33 @@ class PreferencesWindowController(NSObject):
                             "offline oder Re-Auth nötig).", "warning")
             return
         self._choose_excludes(u, names)
+
+    @objc.IBAction
+    def syncTimesAccount_(self, _sender) -> None:  # noqa: N802
+        """Eigener Uhrzeit-Plan für EINEN Account (leer = globaler Plan)."""
+        u = self._selected_user()
+        if u is None:
+            ui_appkit.alert("Kein Account gewählt", "Bitte zuerst einen Account in der Liste wählen.", "warning")
+            return
+        global_txt = ", ".join(self.facade.settings.sync_times) or "Intervall alle %d h" % (
+            self.facade.settings.sync_interval_hours)
+        text = ui_appkit.ask_text(
+            f"Sync-Plan – {u.apple_id}",
+            "Eigene Uhrzeiten für diesen Account, z. B. „07:00, 12:00, 19:00“.\n"
+            f"Leer lassen = globaler Plan ({global_txt}).",
+            default=", ".join(u.sync_times))
+        if text is None:
+            return
+        try:
+            times = parse_schedule(text)
+        except ValueError:
+            ui_appkit.alert("Ungültige Uhrzeit",
+                            "Bitte Zeiten als HH:MM angeben, durch Komma getrennt.", "warning")
+            return
+        u.sync_times = times
+        self.facade.update_user(u)
+        self._reload_accounts()
+        self.facade.refresh_ui()
 
     def _choose_excludes(self, user: User, names: list) -> None:
         """Modaler Dialog: oberste Drive-Ordner per Häkchen aus-/abwählen."""

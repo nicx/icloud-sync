@@ -45,6 +45,10 @@ class User:
     :param dest_base_path: Ziel-Basispfad auf dem (gemounteten) Volume.
     :param drive_excludes: Drive-relative Ordner (z. B. geteilte), die NICHT gesichert werden —
         ausgeschlossene Pfade werden vom Spiegel-Prune lokal entfernt.
+    :param sync_times: **eigener** Uhrzeit-Plan für diesen Account (``"HH:MM"``, lokale
+        Wandzeit). Leer = globaler Plan aus den Settings. Sinn: kleine Accounts (Sekunden
+        pro Lauf) dürfen häufig laufen, während ein großer Account (Stunde pro Lauf)
+        selten bleibt.
     :param status: aktueller :class:`UserStatus`.
     :param last_run: ISO-8601-Zeitstempel des letzten erfolgreichen Laufbeginns (oder None).
     """
@@ -57,6 +61,7 @@ class User:
     sync_mail: bool = False
     dest_base_path: str = ""
     drive_excludes: list = field(default_factory=list)  # Drive-Ordner (rel. Pfade), die NICHT gesichert werden
+    sync_times: list = field(default_factory=list)      # eigener "HH:MM"-Plan; leer = globaler Plan
     status: UserStatus = UserStatus.IDLE
     last_run: Optional[str] = None
     last_error: Optional[str] = None  # Klartext-Grund des letzten Fehlers (für Menü/Notification)
@@ -82,6 +87,7 @@ class User:
             sync_mail=bool(raw.get("sync_mail", False)),
             dest_base_path=raw.get("dest_base_path", ""),
             drive_excludes=list(raw.get("drive_excludes") or []),
+            sync_times=list(raw.get("sync_times") or []),
             status=status_enum,
             last_run=raw.get("last_run"),
             last_error=raw.get("last_error"),

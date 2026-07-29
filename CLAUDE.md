@@ -81,10 +81,13 @@ Trennung im Code, NICHT in separate Prozesse:
 - **Scheduler** (in `app.py`): zwei `rumps.Timer`. Ein langsamer Tick (300 s) prüft
   „fällige" User und stößt den Sync an; ein schneller Tick (1 s) aktualisiert nur die
   Live-Anzeige. Fälligkeit per `_is_due`: **entweder** Stunden-Intervall **oder** feste
-  Uhrzeiten. Ist `settings.sync_times` gesetzt (Liste `"HH:MM"`, lokale Wandzeit), gilt der
-  **Uhrzeit-Plan** (`schedule.due_by_schedule`: feuert je Slot genau einmal, ≤5 min nach der
-  Zeit); sonst das **Intervall** (`now - last_run >= sync_interval_hours`, Default 4 h). Die
-  reine Plan-Logik liegt in `src/schedule.py` (kein rumps-Import → unit-testbar).
+  Uhrzeiten. Maßgeblich ist `schedule.effective_times(user.sync_times, settings.sync_times)`:
+  ein **eigener Account-Plan schlägt den globalen**. Ist danach eine Liste `"HH:MM"` (lokale
+  Wandzeit) gesetzt, gilt der **Uhrzeit-Plan** (`schedule.due_by_schedule`: feuert je Slot
+  genau einmal, ≤5 min nach der Zeit); sonst das **Intervall**
+  (`now - last_run >= sync_interval_hours`, Default 4 h). Die reine Plan-Logik liegt in
+  `src/schedule.py` (kein rumps-Import → unit-testbar). Läufe sind **serialisiert**
+  (`_sync_lock`) — ein fälliger kleiner Account wartet also, wenn gerade ein großer läuft.
   **Missed-Run-Catch-up** in beiden Modi — war der Mac im Sleep, ist `last_run` alt und der
   User sofort fällig (beim Uhrzeit-Plan wird der verpasste Slot einmalig nachgeholt). `needs_reauth`- und `running`-User werden vom Auto-Sync
   ausgenommen (`_is_due`); `error`-User werden beim nächsten Fälligkeitsfenster
@@ -157,6 +160,13 @@ Pro User (`User`-Dataclass, persistiert als `users.json` in App Support):
   Account das aktivieren (Paare teilen sich dieselbe → sonst doppelt). Toggle im User-Untermenü.
 - `dest_base_path` — Ziel-Basispfad auf dem (gemounteten) Volume; darunter legt die
   Engine `Drive/`, `Photos/`, `Contacts/`, `Mail/` an
+- `sync_times` (Default leer): **eigener** Uhrzeit-Plan nur für diesen Account (`"HH:MM"`,
+  lokale Wandzeit). Leer = globaler Plan aus den Settings. Auswahl im Einstellungs-Fenster →
+  Accounts → „Sync-Plan…"; die Spalte „Plan" zeigt „global" oder die eigenen Zeiten.
+  Hintergrund: Der Aufwand pro Lauf ist **fix** (voller Server-Walk, unabhängig von der
+  Änderungsmenge) — gemessen timo ~54 min (Drive 34 / Photos 15 / Mail 5), max ~3 min,
+  annabell ~37 s, hanna ~23 s, familie ~4 s. Kleine Accounts dürfen also oft laufen, ohne
+  dass der große dabei mitgezogen wird.
 - `drive_excludes` (Default leer): Drive-Ordner (rel. Pfade), die **nicht** gesichert werden —
   z. B. mit mir geteilte Ordner auf dem Collaborator-Account. Ausgeschlossenes wird vom
   Spiegel-Prune **lokal entfernt**. Auswahl im Einstellungs-Fenster → Accounts →

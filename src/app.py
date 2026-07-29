@@ -30,7 +30,7 @@ from .config.backup import backup_config_to, restore_config_from
 from .config.paths import logs_dir
 from .config.settings import Settings, load_settings, save_settings
 from .config.users import User, UsersStore, UserStatus
-from .schedule import due_by_schedule
+from .schedule import due_by_schedule, effective_times
 from .sync import engine
 
 LOGGER = logging.getLogger(__name__)
@@ -462,9 +462,10 @@ class SyncApp(rumps.App):
     def _is_due(self, user: User) -> bool:
         """True, wenn ein Auto-Sync für den User fällig ist.
 
-        Sind feste Uhrzeiten gesetzt (``settings.sync_times``), gilt der Uhrzeit-Plan
-        (lokale Wandzeit); sonst das Stunden-Intervall. Beides deckt Missed-Run-Catch-up
-        ab: war der Mac im Sleep, ist last_run alt -> sofort fällig.
+        Reihenfolge: **eigener** Uhrzeit-Plan des Users (``user.sync_times``) schlägt den
+        globalen Plan (``settings.sync_times``); ohne beides gilt das Stunden-Intervall.
+        Alle Varianten decken Missed-Run-Catch-up ab: war der Mac im Sleep, ist last_run
+        alt -> sofort fällig.
         Re-Auth-/Fehler-User werden nicht automatisch gesynct (brauchen User-Eingriff).
         Bei pausiertem Auto-Sync ist niemand fällig (manueller „Sync jetzt" bleibt möglich).
         """
@@ -472,9 +473,9 @@ class SyncApp(rumps.App):
             return False
         if user.status in (UserStatus.NEEDS_REAUTH, UserStatus.RUNNING):
             return False
-        if self.settings.sync_times:
-            return due_by_schedule(self.settings.sync_times, user.last_run,
-                                   datetime.now().astimezone())
+        times = effective_times(user.sync_times, self.settings.sync_times)
+        if times:
+            return due_by_schedule(times, user.last_run, datetime.now().astimezone())
         if not user.last_run:
             return True
         try:

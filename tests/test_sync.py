@@ -747,6 +747,48 @@ def test_due_by_schedule():
     check(due_by_schedule(["07:30", "19:30"], iso(19, 7, 35), local(20, 0)) is True, "schedule: zweiter Slot fällig")
 
 
+def test_effective_times_pro_account():
+    """Eigener Account-Plan schlägt den globalen; leer = global; beides leer = Intervall."""
+    from src.schedule import effective_times, due_by_schedule
+    from datetime import datetime, timezone
+
+    glob = ["05:15", "09:15", "13:15", "18:15", "22:15"]
+    eigen = ["07:00", "12:00", "19:00"]
+
+    check(effective_times(eigen, glob) == eigen, "plan: eigener Plan schlägt globalen")
+    check(effective_times([], glob) == glob, "plan: leerer eigener -> globaler Plan")
+    check(effective_times(None, glob) == glob, "plan: None -> globaler Plan")
+    check(effective_times([], []) == [], "plan: beides leer -> Intervall (leere Liste)")
+    check(effective_times(eigen, []) == eigen, "plan: eigener ohne globalen")
+    # Kopie, nicht dieselbe Liste — sonst mutiert ein Aufrufer die Settings.
+    res = effective_times([], glob)
+    res.append("23:59")
+    check(glob == ["05:15", "09:15", "13:15", "18:15", "22:15"], "plan: globale Liste unberührt")
+
+    # Zusammenspiel: stündlicher Account ist um 08:00 fällig, der globale Plan nicht.
+    tz = timezone.utc
+    now = datetime(2026, 7, 29, 8, 0, tzinfo=tz)
+    last = datetime(2026, 7, 29, 7, 5, tzinfo=tz).isoformat()
+    stuendlich = ["%02d:00" % h for h in range(24)]
+    check(due_by_schedule(effective_times(stuendlich, glob), last, now) is True,
+          "plan: stündlicher Account um 08:00 fällig")
+    check(due_by_schedule(effective_times([], glob), last, now) is False,
+          "plan: globaler Account um 08:00 nicht fällig")
+
+
+def test_user_sync_times_roundtrip():
+    """sync_times überlebt to_dict/from_dict; alte users.json ohne Feld bleibt gültig."""
+    u = User(apple_id="p@x", sync_times=["07:00", "19:00"])
+    back = User.from_dict(u.to_dict())
+    check(back.sync_times == ["07:00", "19:00"], f"user: sync_times Roundtrip ({back.sync_times})")
+    alt = User.from_dict({"apple_id": "alt@example.com"})
+    check(alt.sync_times == [], "user: sync_times Default leer (alte JSON)")
+    # Kein geteilter Default zwischen Instanzen (klassische dataclass-Falle).
+    a, b = User(apple_id="a@x"), User(apple_id="b@x")
+    a.sync_times.append("06:00")
+    check(b.sync_times == [], "user: sync_times nicht zwischen Instanzen geteilt")
+
+
 def test_engine_offline_is_transient():
     """Offline (iCloud nicht erreichbar) ist KEIN Fehler: kein error-Status, keine Mail,
     last_run unverändert -> Retry beim nächsten Tick (nicht erst nach sync_interval_hours)."""
@@ -994,6 +1036,8 @@ if __name__ == "__main__":
     test_settings_sync_times_roundtrip()
     test_parse_schedule()
     test_due_by_schedule()
+    test_effective_times_pro_account()
+    test_user_sync_times_roundtrip()
     test_engine_offline_is_transient()
     test_engine_emails_on_new_problem()
     test_config_backup_restore()
