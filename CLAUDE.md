@@ -333,6 +333,14 @@ ggf. erneutes Setzen der Passwörter.
    **nicht**. Siehe „pyicloud aktualisieren".
 8. **Spiegel-Löschen** – `prune_extra` nur bei vollständigem, fehlerfreiem Listing
    (Guards in jedem Sync-Modul). Niemals löschen bei Teil-/Fehlerlauf.
+9. **Contacts-API liefert kurzzeitig VERALTETE Daten** (kein Bug bei uns). Am 2026-08-03
+   beobachtet: 16 Kontakte um 14:37–14:47 auf einem anderen Gerät geändert; icloud.com zeigte
+   sie sofort, die `/co/`-API aber noch ~15 min lang den alten Stand (inkl. alter Anzahl und
+   alter `dateModified`). Erst danach kippte sie um. **Konsequenz für die Fehlersuche:** „Der
+   Account hat die Änderung nicht" lässt sich mit dieser API **nicht** beweisen — ein
+   Re-Login/`refresh_client` hilft nicht, weil `/co/startup` und `/co/contacts` denselben
+   veralteten Stand liefern. Maßgeblich ist icloud.com; weicht die API ab, schlicht später
+   erneut messen statt Code zu ändern.
 
 ## pyicloud aktualisieren
 
