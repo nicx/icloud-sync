@@ -153,8 +153,9 @@ icloud-sync/
 Pro User (`User`-Dataclass, persistiert als `users.json` in App Support):
 
 - `apple_id` (E-Mail) — eindeutiger Schlüssel
-- `sync_drive`, `sync_photos` (Default an), `sync_contacts` (Default **aus** — Web-Session,
-  kein Extra-Passwort), `sync_mail` (Default **aus** — braucht app-spezifisches Passwort)
+- `sync_drive`, `sync_photos` (Default an), `sync_contacts` (Default **aus** — CardDAV,
+  braucht wie Mail ein app-spezifisches Passwort), `sync_mail` (Default **aus** — IMAP,
+  app-spezifisches Passwort)
 - `sync_shared_photos` (Default **aus**): zusätzlich die **geteilte Mediathek** nach
   `SharedPhotos/` sichern (Add-on zu `sync_photos`). Pro geteilter Bibliothek sollte nur **ein**
   Account das aktivieren (Paare teilen sich dieselbe → sonst doppelt). Toggle im User-Untermenü.
@@ -238,12 +239,26 @@ zusätzlich `INTERNALDATE` (Server-Empfangszeit) und setzt sie via `util.set_mti
 **Änderungs- und Erstellungsdatum** der `.eml` — die Finder-Spalten zeigen so das Empfangs-,
 nicht das Download-Datum (Dateiname/Schema unverändert `<uid>.eml`).
 
-**Contacts** (`sync/contacts.py`): `api.contacts.all` (rohe Kontakt-Dicts) → je Kontakt
-`Contacts/<name>_<kurz-id>.vcf` **und** `…_.json`. Die **vCard 3.0** bildet die Standardfelder
-defensiv ab (importierbar); das **Roh-JSON** ist die **verlustfreie** Quelle (Apple-Extensions,
-Gruppen, Foto). Änderungserkennung über Inhaltsvergleich (`_write_if_changed`); `kurz-id` =
-SHA1 der `contactId`. **Guard:** `None`/Fehler ⇒ kein Prune; **leere** Liste ⇒ ebenfalls kein
-Prune (Schutz vor Massenlöschen). Web-Session (kein Extra-Passwort).
+**Contacts** (`sync/contacts.py`): **CardDAV** (nicht die Web-API!) → je Kontakt
+`Contacts/<name>_<kurz-id>.vcf` mit **Apples Original-vCard**, byte-genau übernommen (inkl.
+Foto und `X-APPLE-*`). Die Datei ist damit selbst die verlustfreie Quelle; das frühere
+Roh-JSON entfällt. `kurz-id` = SHA1 der vCard-`UID`. Ablauf: PROPFIND-Kette
+(Principal → `addressbook-home-set` → Adressbuch-Sammlung), dann **ein** `REPORT`
+(`addressbook-query`) für alle vCards. Änderungserkennung über Inhaltsvergleich
+(`_write_if_changed`). **Guard:** Fehler ⇒ kein Prune (auch bei Einzelfehlern, `errors == 0`
+ist Bedingung); **leere** Liste ⇒ ebenfalls kein Prune.
+
+**Credentials:** CardDAV verlangt das **app-spezifische Passwort** (gleicher Keychain-Service
+wie Mail, `icloud-sync-mail`) — das reguläre Passwort wird abgelehnt. Contacts läuft dadurch
+**unabhängig von der Web-Session**, wie Mail: Drive/Photos können Re-Auth brauchen, die
+Kontakte werden trotzdem gesichert.
+
+> **Warum der Wechsel (2026-08-04):** Die `/co/`-Web-API lieferte für einen Account ab
+> 2026-08-03 14:47:50 **dauerhaft** einen eingefrorenen Stand — über 16 h und ~16 Läufe
+> meldete sie „0 geändert", während icloud.com die Änderungen zeigte. Alle Varianten
+> (`/co/startup`, `/co/contacts` mit/ohne Tokens) gaben dasselbe Alte zurück; Re-Login half
+> nicht, pyicloud 2.6.5 ist an der Stelle identisch. CardDAV hatte alles korrekt. Siehe
+> Fallstrick #9.
 
 **Retry/Backoff** (`util.with_retries`): exponentielles Backoff (Default 4 Versuche, ab
 2 s) nur bei retrybaren Fehlern (HTTP 429/5xx, „throttl/rate limit/timeout"). Apple nicht
@@ -333,14 +348,14 @@ ggf. erneutes Setzen der Passwörter.
    **nicht**. Siehe „pyicloud aktualisieren".
 8. **Spiegel-Löschen** – `prune_extra` nur bei vollständigem, fehlerfreiem Listing
    (Guards in jedem Sync-Modul). Niemals löschen bei Teil-/Fehlerlauf.
-9. **Contacts-API liefert kurzzeitig VERALTETE Daten** (kein Bug bei uns). Am 2026-08-03
-   beobachtet: 16 Kontakte um 14:37–14:47 auf einem anderen Gerät geändert; icloud.com zeigte
-   sie sofort, die `/co/`-API aber noch ~15 min lang den alten Stand (inkl. alter Anzahl und
-   alter `dateModified`). Erst danach kippte sie um. **Konsequenz für die Fehlersuche:** „Der
-   Account hat die Änderung nicht" lässt sich mit dieser API **nicht** beweisen — ein
-   Re-Login/`refresh_client` hilft nicht, weil `/co/startup` und `/co/contacts` denselben
-   veralteten Stand liefern. Maßgeblich ist icloud.com; weicht die API ab, schlicht später
-   erneut messen statt Code zu ändern.
+9. **Die `/co/`-Contacts-Web-API ist unzuverlässig — deshalb nutzen wir sie nicht mehr.**
+   Erst mit ~15 min Verzug beobachtet (2026-08-03), dann **dauerhaft eingefroren**: ab
+   14:47:50 lieferte sie über 16 h denselben Stand, während icloud.com die Änderungen zeigte.
+   Weder Re-Login noch ein pyicloud-Update halfen; `/co/startup` und `/co/contacts` gaben
+   beide dasselbe Alte zurück. **Konsequenz für die Fehlersuche:** Mit dieser API lässt sich
+   *nicht* beweisen, dass eine Änderung im Account fehlt — eine „frische Session" bestätigt
+   den alten Stand nur scheinbar. Maßgeblich ist icloud.com bzw. **CardDAV**, auf das
+   `sync/contacts.py` seit 2026-08-04 setzt.
 
 ## pyicloud aktualisieren
 

@@ -190,7 +190,8 @@ class PreferencesWindowController(NSObject):
         # Zwei Button-Reihen (sonst zu breit fürs Fenster).
         row1 = [("Hinzufügen", b"addAccount:"), ("Bearbeiten…", b"editAccount:"),
                 ("Entfernen…", b"removeAccount:"), ("Sync jetzt", b"syncAccount:")]
-        row2 = [("Re-Auth…", b"reauthAccount:"), ("Mail-Passwort…", b"mailPwAccount:"),
+        # App-Passwort: von Mail (IMAP) UND Contacts (CardDAV) genutzt.
+        row2 = [("Re-Auth…", b"reauthAccount:"), ("App-Passwort…", b"mailPwAccount:"),
                 ("Drive-Ausschlüsse…", b"driveExcludesAccount:"), ("Sync-Plan…", b"syncTimesAccount:")]
         for row, y in ((row1, 44), (row2, 10)):
             x = 16
@@ -513,9 +514,11 @@ class PreferencesWindowController(NSObject):
 
     def _prompt_mail_pw(self, apple_id: str) -> bool:
         pw = ui_appkit.ask_text(
-            "iCloud Mail – App-Passwort",
-            "App-spezifisches Passwort (appleid.apple.com → Anmeldung & Sicherheit → "
-            "App-spezifische Passwörter).", secure=True)
+            "iCloud – App-spezifisches Passwort",
+            "Wird für Mail (IMAP) und Kontakte (CardDAV) gebraucht — das reguläre "
+            "Apple-ID-Passwort wird dort abgelehnt.\n"
+            "appleid.apple.com → Anmeldung & Sicherheit → App-spezifische Passwörter.",
+            secure=True)
         if not pw:
             return False
         self.facade.set_mail_password(apple_id, pw)

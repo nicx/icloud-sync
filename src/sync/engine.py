@@ -24,6 +24,7 @@ from ..config.paths import logs_dir
 from ..config.settings import load_settings
 from ..config.users import _UNSET, User, UsersStore, UserStatus
 from . import contacts, drive, mail, photos
+from .contacts import ContactsAuthError
 from .mail import MailAuthError
 
 LOGGER = logging.getLogger(__name__)
@@ -126,11 +127,11 @@ def run_user(user: User, store: Optional[UsersStore] = None, progress_cb=None) -
     reasons: list[str] = []   # gesammelte Klartext-Fehlergründe (-> last_error)
     web_reauth = False
 
-    # 2) Web-API (Drive/Photos/Contacts) – nur wenn benötigt. Mail läuft davon unabhängig.
-    if user.sync_drive or user.sync_photos or user.sync_contacts:
+    # 2) Web-API (Drive/Photos) – nur wenn benötigt. Contacts/Mail laufen davon unabhängig.
+    if user.sync_drive or user.sync_photos:
         password = keychain.get_password(user.apple_id)
         if not password:
-            msg = "Kein Apple-ID-Passwort im Keychain (Drive/Photos/Contacts)"
+            msg = "Kein Apple-ID-Passwort im Keychain (Drive/Photos)"
             LOGGER.error("[%s] %s", user.apple_id, msg)
             reasons.append(msg)
         else:
@@ -161,16 +162,37 @@ def run_user(user: User, store: Optional[UsersStore] = None, progress_cb=None) -
                             msg = f"Photos: {ps.errors} Fehler"
                             reasons.append(msg)
                             notify.notify("iCloud Sync – Photos-Fehler", f"{user.apple_id}: {msg}")
-                    if user.sync_contacts:
-                        cs = contacts.sync_contacts(api, user.dest_base_path, user.apple_id,
-                                                    _phase_cb("contacts"))
-                        if cs.errors > 0:
-                            msg = f"Contacts: {cs.errors} Fehler"
-                            reasons.append(msg)
-                            notify.notify("iCloud Sync – Contacts-Fehler", f"{user.apple_id}: {msg}")
                 except Exception as exc:  # noqa: BLE001 - harter, unerwarteter Fehler
-                    LOGGER.exception("Drive/Photos/Contacts-Sync für %s abgebrochen", user.apple_id)
-                    reasons.append(f"Drive/Photos/Contacts-Sync abgebrochen: {exc}")
+                    LOGGER.exception("Drive/Photos-Sync für %s abgebrochen", user.apple_id)
+                    reasons.append(f"Drive/Photos-Sync abgebrochen: {exc}")
+
+    # 2b) Contacts (CardDAV) – app-spezifisches Passwort, unabhängig von der Web-Session.
+    #     Die frühere Web-API lieferte zeitweise dauerhaft eingefrorene Daten (siehe
+    #     sync/contacts.py); CardDAV ist das Protokoll der Kontakte-App.
+    if user.sync_contacts:
+        app_pw = keychain.get_mail_password(user.apple_id)
+        if not app_pw:
+            msg = "Kein app-spezifisches Passwort im Keychain (Contacts)"
+            LOGGER.error("[%s] %s", user.apple_id, msg)
+            notify.notify("iCloud Sync – App-Passwort fehlt",
+                          f"{user.apple_id}: app-spezifisches Passwort für Kontakte setzen.")
+            reasons.append(msg)
+        else:
+            try:
+                cs = contacts.sync_contacts(user.apple_id, app_pw, user.dest_base_path,
+                                            _phase_cb("contacts"))
+                if cs.errors > 0:
+                    msg = f"Contacts: {cs.errors} Fehler"
+                    reasons.append(msg)
+                    notify.notify("iCloud Sync – Contacts-Fehler", f"{user.apple_id}: {msg}")
+            except ContactsAuthError as exc:
+                msg = "Contacts-Login abgelehnt (App-Passwort prüfen/neu erzeugen)"
+                LOGGER.error("[%s] %s: %s", user.apple_id, msg, exc)
+                notify.notify("iCloud Sync – Contacts-Login", f"{user.apple_id}: {msg}")
+                reasons.append(msg)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.exception("Contacts-Sync für %s abgebrochen", user.apple_id)
+                reasons.append(f"Contacts-Sync abgebrochen: {exc}")
 
     # 3) Mail (IMAP) – eigene Credentials, unabhängig von der Web-Session.
     if user.sync_mail:

@@ -145,22 +145,90 @@ class FakePhotosLib:
         return libs
 
 
-class FakeContactsLib:
-    def __init__(self, data):
-        self._data = data   # list[dict] oder None
+class FakeDavResponse:
+    def __init__(self, status, body: str):
+        self.status_code = status
+        self.content = body.encode("utf-8")
 
-    @property
-    def all(self):
-        return self._data
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError("HTTP %d" % self.status_code)
+
+
+class FakeCardDAV:
+    """Minimaler CardDAV-Server: beantwortet die drei PROPFINDs und den REPORT.
+
+    ``vcards`` = Liste von (href, vcard-text). ``auth_ok=False`` -> 401 (Auth-Guard),
+    ``report_status`` erlaubt einen Serverfehler beim Abholen (Guard: kein Löschen).
+    """
+
+    def __init__(self, vcards, auth_ok=True, report_status=207):
+        self.vcards = vcards
+        self.auth_ok = auth_ok
+        self.report_status = report_status
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def request(self, method, url, data=None, headers=None, auth=None, timeout=None):
+        self.calls.append((method, url))
+        if not self.auth_ok:
+            return FakeDavResponse(401, "")
+        if method == "REPORT":
+            if self.report_status >= 400:
+                return FakeDavResponse(self.report_status, "")
+            teile = []
+            for href, card in self.vcards:
+                # Wie Apple: CR als Zeichenreferenz, sonst normalisiert der XML-Parser
+                # CRLF zu LF und die vCard waere nicht mehr byte-genau.
+                esc = (card.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                           .replace("\r", "&#13;"))
+                teile.append(
+                    '<response><href>%s</href><propstat><prop>'
+                    '<address-data xmlns="urn:ietf:params:xml:ns:carddav">%s</address-data>'
+                    '</prop></propstat></response>' % (href, esc))
+            return FakeDavResponse(207,
+                                   '<multistatus xmlns="DAV:">%s</multistatus>' % "".join(teile))
+        # PROPFIND-Kette: Principal -> Home -> Sammlung
+        if url.endswith("contacts.icloud.com/"):
+            return FakeDavResponse(207,
+                '<multistatus xmlns="DAV:"><response><href>/</href><propstat><prop>'
+                '<current-user-principal><href>/42/principal/</href></current-user-principal>'
+                '</prop></propstat></response></multistatus>')
+        if url.endswith("/principal/"):
+            return FakeDavResponse(207,
+                '<multistatus xmlns="DAV:"><response><href>/42/principal/</href><propstat><prop>'
+                '<addressbook-home-set xmlns="urn:ietf:params:xml:ns:carddav">'
+                '<href xmlns="DAV:">https://p1-contacts.icloud.com/42/carddavhome/</href>'
+                '</addressbook-home-set></prop></propstat></response></multistatus>')
+        return FakeDavResponse(207,
+            '<multistatus xmlns="DAV:">'
+            '<response><href>/42/carddavhome/</href><propstat><prop><resourcetype>'
+            '<collection/></resourcetype></prop></propstat></response>'
+            '<response><href>/42/carddavhome/card/</href><propstat><prop><resourcetype>'
+            '<collection/><addressbook xmlns="urn:ietf:params:xml:ns:carddav"/>'
+            '</resourcetype></prop></propstat></response></multistatus>')
+
+
+def vcard(uid, fn, extra=""):
+    """Baut eine minimale vCard, wie Apple sie liefert (CRLF-Zeilenenden)."""
+    zeilen = ["BEGIN:VCARD", "VERSION:3.0", "UID:%s" % uid, "FN:%s" % fn]
+    if extra:
+        zeilen.append(extra)
+    zeilen.append("END:VCARD")
+    return "\r\n".join(zeilen) + "\r\n"
 
 
 class FakeApi:
     def __init__(self, *, drive_service=None, photos_assets=None, url_map=None,
-                 shared_assets=None, libraries_error=False, contacts_data=None):
+                 shared_assets=None, libraries_error=False):
         self.drive = drive_service
         self.photos = FakePhotosLib(photos_assets if photos_assets is not None else [],
                                     shared_assets=shared_assets, libraries_error=libraries_error)
-        self.contacts = FakeContactsLib(contacts_data)
         self.session = FakeSession(url_map or {})
 
 
@@ -422,82 +490,80 @@ def test_photos_shared_resilience():
 # --- Contacts ---------------------------------------------------------------
 
 def test_contacts():
+    """CardDAV-Spiegel: Apples Original-vCard je Kontakt, nur .vcf (kein JSON mehr)."""
     dest = tempfile.mkdtemp(prefix="contacts_")
-    c1 = {"contactId": "C1", "firstName": "Max", "lastName": "Mustermann",
-          "nickName": "Maxi",
-          "phones": [{"label": "MOBILE", "field": "+49 170 1"}],
-          "emailAddresses": [{"label": "WORK", "field": "max@example.com"}]}
-    c2 = {"contactId": "C2", "firstName": "Erika", "companyName": "ACME"}
-    api = FakeApi(contacts_data=[c1, c2])
-
-    s = contacts.sync_contacts(api, dest, "c@example.com")
     cdir = os.path.join(dest, "Contacts")
-    files = listdir(cdir)
-    check(len([f for f in files if f.endswith(".vcf")]) == 2, f"contacts: 2 vCards ({files})")
-    check(len([f for f in files if f.endswith(".json")]) == 2, f"contacts: 2 JSON ({files})")
-    check(s.downloaded == 2, f"contacts: 2 neu (war {s.downloaded})")
-    vcf = [f for f in files if f.startswith("Max Mustermann") and f.endswith(".vcf")]
-    check(vcf and b"TEL;TYPE=MOBILE:+49 170 1" in read(os.path.join(cdir, vcf[0])), "contacts: vCard-Telefon")
-    # Apple liefert den Spitznamen als "nickName" (camelCase) – nicht "nickname"
-    check(vcf and b"NICKNAME:Maxi" in read(os.path.join(cdir, vcf[0])), "contacts: vCard-Spitzname")
+    v1 = ("/42/carddavhome/card/a.vcf",
+          vcard("UID-1", "Max Mustermann", "TEL;type=CELL:+49 170 1"))
+    v2 = ("/42/carddavhome/card/b.vcf", vcard("UID-2", "Erika Musterfrau"))
 
-    # 2. Lauf unverändert -> skip
-    s2 = contacts.sync_contacts(api, dest, "c@example.com")
-    check(s2.downloaded == 0 and s2.updated == 0 and s2.skipped == 2,
-          f"contacts 2. Lauf skip (dl={s2.downloaded}, upd={s2.updated}, skip={s2.skipped})")
+    def lauf(dav, ziel=dest):
+        contacts.requests.Session = lambda: dav          # CardDAV-Server unterschieben
+        return contacts.sync_contacts("c@example.com", "app-pw", ziel)
 
-    # Spiegel: C2 entfernt -> dessen Dateien weg
-    api2 = FakeApi(contacts_data=[c1])
-    s3 = contacts.sync_contacts(api2, dest, "c@example.com")
-    check(s3.deleted == 2, f"contacts Spiegel: 2 Dateien gelöscht (war {s3.deleted})")
-    check(len(listdir(cdir)) == 2, "contacts: nach Löschen noch 2 Dateien (C1 vcf+json)")
+    echt = contacts.requests.Session
+    try:
+        s = lauf(FakeCardDAV([v1, v2]))
+        files = listdir(cdir)
+        check(s.downloaded == 2, f"contacts: 2 neu (war {s.downloaded})")
+        check(len(files) == 2 and all(f.endswith(".vcf") for f in files),
+              f"contacts: nur .vcf, kein JSON mehr ({files})")
+        vcf = [f for f in files if f.startswith("Max Mustermann")]
+        check(bool(vcf), f"contacts: Dateiname aus FN ({files})")
+        # Apples vCard wird UNVERAENDERT uebernommen (byte-genau)
+        check(read(os.path.join(cdir, vcf[0])) == v1[1].encode("utf-8"),
+              "contacts: vCard byte-genau wie von Apple")
 
-    # Guard: None -> kein Löschen
-    s4 = contacts.sync_contacts(FakeApi(contacts_data=None), dest, "c@example.com")
-    check(s4.deleted == 0 and s4.errors == 1 and len(listdir(cdir)) == 2, "contacts Guard: None -> kein Löschen")
+        # 2. Lauf unveraendert -> skip
+        s2 = lauf(FakeCardDAV([v1, v2]))
+        check(s2.downloaded == 0 and s2.updated == 0 and s2.skipped == 2,
+              f"contacts 2. Lauf skip (dl={s2.downloaded}, skip={s2.skipped})")
 
-    # Guard: leere Liste -> kein Löschen
-    s5 = contacts.sync_contacts(FakeApi(contacts_data=[]), dest, "c@example.com")
-    check(s5.deleted == 0 and len(listdir(cdir)) == 2, "contacts Guard: leere Liste -> kein Löschen")
+        # Geaenderter Inhalt -> updated (nicht downloaded)
+        v1b = (v1[0], vcard("UID-1", "Max Mustermann", "TEL;type=CELL:+49 170 999"))
+        s3 = lauf(FakeCardDAV([v1b, v2]))
+        check(s3.updated == 1 and s3.downloaded == 0, f"contacts: Aenderung = updated ({s3.summary()})")
 
-    # Punkt im Namen ("Dr.") darf Namensrest + Kollisions-Hash nicht abschneiden:
-    # with_suffix() haette "Arzt Dr. Mueller_<hash>.json" zu "Arzt Dr.json" gemacht.
-    dest2 = tempfile.mkdtemp(prefix="contacts_dot_")
-    dot1 = {"contactId": "D1", "firstName": "Arzt Dr.", "lastName": "Mueller"}
-    dot2 = {"contactId": "D2", "firstName": "Arzt Dr.", "lastName": "Schmidt"}
-    contacts.sync_contacts(FakeApi(contacts_data=[dot1, dot2]), dest2, "c@example.com")
-    dfiles = sorted(listdir(os.path.join(dest2, "Contacts")))
-    check(len(dfiles) == 4, f"contacts Punkt-Name: 4 Dateien statt Kollision ({dfiles})")
-    check(all(f.startswith("Arzt Dr. Mueller_") or f.startswith("Arzt Dr. Schmidt_") for f in dfiles),
-          f"contacts Punkt-Name: voller Name + Hash erhalten ({dfiles})")
+        # Spiegel: v2 weg -> dessen Datei wird entfernt
+        s4 = lauf(FakeCardDAV([v1b]))
+        check(s4.deleted == 1 and len(listdir(cdir)) == 1,
+              f"contacts Spiegel: 1 entfernt (war {s4.deleted})")
 
-    # Apple wirft bei Contacts sporadisch 420 "Invalid sync token" -> retrybar
-    class Boom(Exception):
-        def __init__(self):
-            super().__init__("Client Error (420) (420): Invalid sync token")
-            self.code = 420
+        # Guard: Serverfehler beim REPORT -> Fehler, aber NICHTS geloescht
+        s5 = lauf(FakeCardDAV([], report_status=500))
+        check(s5.errors == 1 and s5.deleted == 0 and len(listdir(cdir)) == 1,
+              "contacts Guard: Serverfehler -> kein Loeschen")
 
-    class FlakyContacts:
-        def __init__(self):
-            self.calls = 0
+        # Guard: leere Kontaktliste -> kein Loeschen
+        s6 = lauf(FakeCardDAV([]))
+        check(s6.deleted == 0 and len(listdir(cdir)) == 1,
+              "contacts Guard: leere Liste -> kein Loeschen")
 
-        @property
-        def all(self):
-            self.calls += 1
-            if self.calls == 1:
-                raise Boom()
-            return [c1]
+        # Auth abgelehnt -> ContactsAuthError, nichts geloescht
+        try:
+            lauf(FakeCardDAV([v1b], auth_ok=False))
+            check(False, "contacts: 401 muss ContactsAuthError werfen")
+        except contacts.ContactsAuthError:
+            check(len(listdir(cdir)) == 1, "contacts Auth-Guard: kein Loeschen bei 401")
 
-    class FlakyApi:
-        def __init__(self):
-            self.contacts = FlakyContacts()
+        # Punkt im Namen darf Namensrest + Kollisions-Hash nicht abschneiden
+        dest2 = tempfile.mkdtemp(prefix="contacts_dot_")
+        d1 = ("/c/d1.vcf", vcard("UID-D1", "Arzt Dr. Mueller"))
+        d2 = ("/c/d2.vcf", vcard("UID-D2", "Arzt Dr. Schmidt"))
+        lauf(FakeCardDAV([d1, d2]), dest2)
+        dfiles = sorted(listdir(os.path.join(dest2, "Contacts")))
+        check(len(dfiles) == 2, f"contacts Punkt-Name: 2 Dateien statt Kollision ({dfiles})")
+        check(all(f.endswith(".vcf") and "_" in f for f in dfiles),
+              f"contacts Punkt-Name: voller Name + Hash erhalten ({dfiles})")
 
-    dest3 = tempfile.mkdtemp(prefix="contacts_420_")
-    fapi = FlakyApi()
-    s6 = contacts.sync_contacts(fapi, dest3, "c@example.com")
-    check(s6.errors == 0 and s6.downloaded == 1,
-          f"contacts 420: Retry rettet den Lauf (err={s6.errors}, dl={s6.downloaded})")
-    check(fapi.contacts.calls == 2, f"contacts 420: genau 1 Wiederholung (calls={fapi.contacts.calls})")
+        # Kein FN -> Fallback auf N (Vorname Nachname), nicht "Kontakt"
+        dest3 = tempfile.mkdtemp(prefix="contacts_nofn_")
+        nofn = ("/c/x.vcf", "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:U-X\r\nN:Meier;Anna;;;\r\nEND:VCARD\r\n")
+        lauf(FakeCardDAV([nofn]), dest3)
+        nf = listdir(os.path.join(dest3, "Contacts"))
+        check(nf and nf[0].startswith("Anna Meier_"), f"contacts: Fallback auf N ({nf})")
+    finally:
+        contacts.requests.Session = echt
 
 
 # --- Mail -------------------------------------------------------------------
