@@ -48,13 +48,16 @@ Damit kann ein API-Aussetzer keinen Massenverlust auslösen.
 ## Tech-Stack
 
 - **Python 3.13** (im `.venv`; ≥ 3.12 vorausgesetzt)
-- **rumps** – Menüleisten-UI (Status-Bar, Popover, Notifications)
+- **pyobjc** (AppKit/Foundation/UserNotifications) – **die gesamte UI**: Statusleiste,
+  Menü, Einstellungs-Fenster, Dialoge, Timer, Notifications
 - **pyicloud** (2.6.4) – iCloud Web-API (Drive + Photos)
 - **imaplib** (stdlib) – iCloud Mail
 - **keyring** – Credentials im macOS-Keychain
-- **pyobjc** (AppKit/Foundation) – nativer Ordner-Dialog (NSOpenPanel), Menüleisten-Icon
 - **py2app** – Bau des `.app`-Bundles
-- macOS-Notifications via rumps, `pync` als Fallback
+- macOS-Notifications via `UNUserNotificationCenter`
+
+> **Kein rumps mehr.** Die UI-Konvergenz auf pyobjc ist abgeschlossen (2026-08-17);
+> `rumps` und `pync` sind aus Code, `requirements.txt` und Bundle entfernt.
 
 > **Kein sqlite.** Der ursprüngliche Spec sah ein sqlite-Manifest (`sync/state.py`) vor;
 > das ist entfallen. Der Zustand ist allein das Dateisystem des Zielordners.
@@ -67,7 +70,7 @@ In-App-Toggle (LaunchAgent).
 
 Trennung im Code, NICHT in separate Prozesse:
 
-- **UI-Schicht** (`src/app.py`, rumps): Menüleisten-Icon/-Menü (schlank: pro Account „Sync jetzt",
+- **UI-Schicht** (`src/app.py` + `src/statusitem.py`, pyobjc): Menüleisten-Icon/-Menü (schlank: pro Account „Sync jetzt",
   „Alle jetzt synchronisieren", Auto-Sync pausieren, „Einstellungen…", „Log anzeigen…"),
   Live-Fortschritt (Spinner + Counts), Scheduler. Hält keine Sync-Logik. Syncs
   laufen in einem Hintergrund-Thread (Daemon), serialisiert über ein `threading.Lock` (keine
@@ -76,9 +79,10 @@ Trennung im Code, NICHT in separate Prozesse:
   ein natives Fenster mit Tabs Allgemein/Sync-Plan/Fehler-E-Mail/Accounts — zeigt alle
   Einstellungen auf einen Blick und ersetzt die frühere Popup-Kette. Bewusst **rumps-frei** und nur
   über die schmale `PrefsFacade` (in `app.py`) an Engine/Config/Keychain gekoppelt. **Ziel: UI-
-  Konvergenz** auf eine einzige pyobjc-UI — Phase 3 ersetzt später auch das rumps-Status-Item durch
-  ein natives `NSStatusItem` (dann kann das Fenster unverändert weiterlaufen).
-- **Scheduler** (in `app.py`): zwei `rumps.Timer`. Ein langsamer Tick (300 s) prüft
+  Konvergenz** auf eine einzige pyobjc-UI — **abgeschlossen**: `statusitem.py` ersetzt seit
+  2026-08-17 auch das Status-Item durch ein natives `NSStatusItem`; das Fenster lief dabei
+  unverändert weiter.
+- **Scheduler** (in `app.py`): zwei `timers.RepeatingTimer` (`NSTimer`). Ein langsamer Tick (300 s) prüft
   „fällige" User und stößt den Sync an; ein schneller Tick (1 s) aktualisiert nur die
   Live-Anzeige. Fälligkeit per `_is_due`: **entweder** Stunden-Intervall **oder** feste
   Uhrzeiten. Maßgeblich ist `schedule.effective_times(user.sync_times, settings.sync_times)`:
@@ -86,7 +90,7 @@ Trennung im Code, NICHT in separate Prozesse:
   Wandzeit) gesetzt, gilt der **Uhrzeit-Plan** (`schedule.due_by_schedule`: feuert je Slot
   genau einmal, ≤5 min nach der Zeit); sonst das **Intervall**
   (`now - last_run >= sync_interval_hours`, Default 4 h). Die reine Plan-Logik liegt in
-  `src/schedule.py` (kein rumps-Import → unit-testbar). Läufe sind **serialisiert**
+  `src/schedule.py` (kein UI-Import → unit-testbar). Läufe sind **serialisiert**
   (`_sync_lock`) — ein fälliger kleiner Account wartet also, wenn gerade ein großer läuft.
   **Missed-Run-Catch-up** in beiden Modi — war der Mac im Sleep, ist `last_run` alt und der
   User sofort fällig (beim Uhrzeit-Plan wird der verpasste Slot einmalig nachgeholt). `needs_reauth`- und `running`-User werden vom Auto-Sync
@@ -94,7 +98,8 @@ Trennung im Code, NICHT in separate Prozesse:
   hingegen wieder mitgenommen (automatischer Retry). **Auto-Sync pausierbar**
   (`settings.auto_sync_paused`, Menü „Auto-Sync pausieren/fortsetzen") — dann ist niemand
   fällig; „Sync jetzt" bleibt manuell möglich. **Start-Gnadenfrist**
-  (`settings.startup_delay_seconds`, Default 90 s): rumps-Timer feuern sofort beim Start —
+  (`settings.startup_delay_seconds`, Default 90 s): der Scheduler-Timer feuert sofort beim
+  Start (`fire_immediately`, wie zuvor rumps) —
   in der Gnadenfrist wird noch nicht gesynct, damit der erste Lauf nach einem Reboot nicht
   ins noch nicht hochgefahrene Netz/DNS läuft. **Offline-Erkennung** (`engine.is_online`,
   TCP zu `www.icloud.com:443`): ist iCloud nicht erreichbar, wird der Lauf **still
@@ -119,11 +124,13 @@ icloud-sync/
   requirements.txt         # Laufzeit-Abhängigkeiten
   requirements-build.txt   # zusätzlich für den py2app-Build
   src/
-    app.py                 # rumps-Entrypoint, Menüleiste, Scheduler, Live-Fortschritt, PrefsFacade
+    app.py                 # Entrypoint + NSApplication-Runloop, Menüaufbau, Scheduler, Live-Fortschritt, PrefsFacade
+    statusitem.py          # NSStatusItem/NSMenu: MenuEntry/SEPARATOR als reine Datenschicht + AppKit-Hülle
+    timers.py              # NSTimer-Wrapper (RepeatingTimer, fire_immediately)
     prefs_window.py        # natives Einstellungs-Fenster (pyobjc/AppKit): Allgemein/Sync-Plan/Fehler-E-Mail/Accounts
     ui_appkit.py           # geteilte AppKit-Helfer (Alert/Eingabe/Ordnerdialog, Main-Thread-Dispatch) – rumps-frei
     schedule.py            # reine Planungslogik für feste Sync-Uhrzeiten (parse_schedule, due_by_schedule)
-    notify.py              # macOS-Notifications (rumps / pync-Fallback)
+    notify.py              # macOS-Notifications (UNUserNotificationCenter) + send_mail
     menubar_icon.py        # Template-Icons (gefüllt=aktiv / umrandet=pausiert) fürs Menüleisten-Icon
     autostart.py           # Login-Autostart via LaunchAgent (In-App-Toggle)
     config/
@@ -335,10 +342,15 @@ ggf. erneutes Setzen der Passwörter.
    `security` ist dauerhaft Ruhe. Siehe „Credentials".
 5. **UNAS-Mount fehlt** – `engine.is_mount_available` prüft vor dem Sync; sonst sauberer
    Abbruch + Notification, kein Crash.
-5b. **Netz nach Reboot noch nicht oben** – Autostart + sofort feuernder rumps-Timer würden
+5b. **Netz nach Reboot noch nicht oben** – Autostart + sofort feuernder Scheduler-Timer würden
    ins tote Netz/DNS laufen (`Request failed to iCloud`, `[Errno 8] nodename…`). Abgefangen
    durch Start-Gnadenfrist (`startup_delay_seconds`) + `engine.is_online`-Check: offline ⇒
    stiller Skip ohne `error`/Mail, `last_run` unverändert (Retry nächster Tick).
+5c. **Notifications brauchen das echte Bundle** – `UNUserNotificationCenter` liefert nur aus,
+   wenn der Prozess über den **App-Stub** `iCloud Sync.app/Contents/MacOS/iCloud Sync`
+   startet. Im Dev-Modus (`python -m src.app`) *und* beim direkten Aufruf des eingebetteten
+   `Contents/MacOS/python` lehnt macOS mit „Notifications are not allowed for this
+   application" ab. Das ist **kein Bug** — nur im gebauten Bundle testen.
 6. **Freier Speicher** – `engine._check_free_space` warnt (< 2 GiB), bricht aber nicht ab.
 7. **pyicloud-API-Drift** – der *Import* ist auf `auth/session.py` beschränkt (Auth/2FA/
    Exceptions). **Aber:** `sync/drive.py` und `sync/photos.py` hängen an pyicloud-Objekt-Shapes
@@ -395,8 +407,14 @@ py2app, Entrypoint `launcher.py`:
 im 2. Lauf, Spiegel-Löschen, alle Lösch-Guards, Photos-Kollision + Live, Mail
 readonly/PEEK/UIDVALIDITY/Move/Auth-Fehler, Engine-Resilienz.
 
+`tests/test_ui.py` — Datenschicht der UI: welche Menüeinträge klickbar sind
+(`MenuEntry.is_enabled`), der `key` für Live-Titel-Updates und das synchrone
+Main-Thread-Marshalling. Die AppKit-Schicht selbst (NSStatusItem/NSMenu/NSTimer) braucht
+eine GUI und wird per Smoke-Test geprüft, nicht im Unit-Test.
+
 ```
-.venv/bin/python tests/test_sync.py
+.venv/bin/python tests/test_sync.py    # 139 grün
+.venv/bin/python tests/test_ui.py      # 17 grün
 ```
 
 ## Status (Definition of Done – Phase 1, erfüllt)

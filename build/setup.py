@@ -61,10 +61,8 @@ OPTIONS = {
     # als Paket erzwingen; sie werden als Abhängigkeiten automatisch eingezogen.
     "packages": [
         "src",
-        "rumps",
         "pyicloud",
         "keyring",
-        "pync",
         "requests",
         "urllib3",
         "certifi",
@@ -77,7 +75,10 @@ OPTIONS = {
         "pydantic_core",
         "srp",
     ],
-    "includes": ["sqlite3"],
+    # AppKit/Foundation/UserNotifications werden **lazy in Funktionen** importiert (damit die
+    # Module ohne GUI importierbar bleiben). Explizit aufführen, damit sie sicher im Bundle
+    # landen und nicht von der Import-Analyse übersehen werden.
+    "includes": ["sqlite3", "objc", "AppKit", "Foundation", "UserNotifications"],
 }
 
 _ICON = os.path.join(HERE, "icon.icns")

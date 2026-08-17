@@ -1,7 +1,11 @@
-"""rumps-Menüleisten-App: Entrypoint, User-Verwaltung, Re-Auth-Flow, Scheduler.
+"""Menüleisten-App (pyobjc/AppKit): Entrypoint, User-Verwaltung, Re-Auth-Flow, Scheduler.
 
 Diese Schicht hält **keine** Sync-Logik — sie zeigt Status, verwaltet User, stößt Läufe an
 und blockiert das UI nicht (Syncs laufen im Hintergrund-Thread).
+
+Die UI besteht ausschließlich aus pyobjc-Bausteinen (:mod:`src.statusitem`,
+:mod:`src.timers`, :mod:`src.ui_appkit`, :mod:`src.prefs_window`) — ``rumps`` ist
+vollständig abgelöst (Phase 3 der UI-Konvergenz, siehe CLAUDE.md).
 
 Start (Entwicklung, ohne .app-Bundle)::
 
@@ -22,15 +26,14 @@ from functools import partial
 from pathlib import Path
 from typing import Optional
 
-import rumps
-
-from . import autostart, menubar_icon, notify
+from . import autostart, menubar_icon, notify, statusitem, timers, ui_appkit
 from .auth import keychain, session
 from .config.backup import backup_config_to, restore_config_from
 from .config.paths import logs_dir
 from .config.settings import Settings, load_settings, save_settings
 from .config.users import User, UsersStore, UserStatus
 from .schedule import due_by_schedule, effective_times
+from .statusitem import SEPARATOR, MenuEntry
 from .sync import engine
 
 LOGGER = logging.getLogger(__name__)
@@ -189,31 +192,32 @@ SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 UI_TICK_SECONDS = 1.0
 
 
-class SyncApp(rumps.App):
+class SyncApp:
     """Menüleisten-Resident für das iCloud-Multi-User-Backup."""
 
     def __init__(self) -> None:
-        # quit_button=None: wir fügen "Beenden" selbst hinzu, da _rebuild_menu das Menü
-        # komplett neu aufbaut und rumps' Auto-Quit-Button dabei sonst verloren ginge.
-        super().__init__("iCloud Sync", title=ICON_OK, quit_button=None)
         self.settings: Settings = load_settings()
         self.store: UsersStore = UsersStore.loaded()
         self._reset_stale_running()
         self._sync_lock = threading.Lock()  # verhindert überlappende Sync-Läufe
         self._progress: dict = {}           # apple_id -> {"drive": {...}, "photos": {...}}
-        self._user_items: dict = {}         # apple_id -> rumps.MenuItem (für Live-Updates)
+        self._live_keys: set = set()        # apple_ids mit Menüeintrag (für Live-Updates)
         self._spin = 0
         self._was_running = False
         self._has_icon = False
         self._started = time.monotonic()  # für die Start-Gnadenfrist (Netz nach Reboot)
         self._prefs = None               # Einstellungs-Fenster-Controller (lazy)
+        self._status = statusitem.StatusItem()
         self._setup_menubar_icon()
         self._rebuild_menu()
 
-        self.timer = rumps.Timer(self._tick, TICK_SECONDS)
+        # fire_immediately=True bildet das bisherige rumps-Verhalten ab: der erste Tick
+        # kommt sofort (baut u. a. das Menü neu auf), die Start-Gnadenfrist verhindert
+        # dabei den verfrühten Sync.
+        self.timer = timers.RepeatingTimer(TICK_SECONDS, self._tick, fire_immediately=True)
         self.timer.start()
         # Schneller Timer nur für die Live-Fortschrittsanzeige (Spinner + Counts).
-        self.ui_timer = rumps.Timer(self._ui_tick, UI_TICK_SECONDS)
+        self.ui_timer = timers.RepeatingTimer(UI_TICK_SECONDS, self._ui_tick)
         self.ui_timer.start()
         # Beim Start einmal die Sessions prüfen (im Hintergrund), damit needs_reauth früh sichtbar ist.
         self._spawn(self._refresh_sessions)
@@ -236,42 +240,44 @@ class SyncApp(rumps.App):
 
     def _rebuild_menu(self) -> None:
         """Baut das gesamte Menü aus dem aktuellen Store-Zustand neu auf."""
-        self.menu.clear()
-        self._user_items = {}
         items: list = []
+        self._live_keys = set()
         for user in self.store.list():
-            items.append(self._user_menu_item(user))
+            items.append(self._user_menu_entry(user))
+            self._live_keys.add(user.apple_id)
         if items:
-            items.append(rumps.separator)
-        items.append(rumps.MenuItem("Alle jetzt synchronisieren", callback=self._sync_all))
+            items.append(SEPARATOR)
+        items.append(MenuEntry("Alle jetzt synchronisieren", self._sync_all))
         pause_label = "Auto-Sync fortsetzen" if self.settings.auto_sync_paused else "Auto-Sync pausieren"
-        items.append(rumps.MenuItem(pause_label, callback=self._toggle_auto_sync))
-        items.append(rumps.MenuItem("Einstellungen…", callback=self._open_prefs))
-        items.append(rumps.MenuItem("Log anzeigen…", callback=self._open_log))
-        items.append(rumps.separator)
-        items.append(rumps.MenuItem("Beenden", callback=self._quit))
-        self.menu = items
+        items.append(MenuEntry(pause_label, self._toggle_auto_sync))
+        items.append(MenuEntry("Einstellungen…", self._open_prefs))
+        items.append(MenuEntry("Log anzeigen…", self._open_log))
+        items.append(SEPARATOR)
+        items.append(MenuEntry("Beenden", self._quit))
+        self._status.set_menu(items)
         self._update_icon()
 
-    def _user_menu_item(self, user: User) -> rumps.MenuItem:
-        """Schlankes Menü pro Account: nur Schnell-Sync; Konfiguration im Fenster."""
+    def _user_menu_entry(self, user: User) -> MenuEntry:
+        """Schlankes Menü pro Account: nur Schnell-Sync; Konfiguration im Fenster.
+
+        Der ``key`` (Apple-ID) erlaubt dem UI-Tick, den Titel während eines Laufs
+        **in place** zu aktualisieren, ohne das Menü neu zu bauen.
+        """
         symbol = STATUS_SYMBOL.get(user.status, "•")
         last = f" – {self._fmt_last_run(user.last_run)}" if user.last_run else ""
-        parent = rumps.MenuItem(f"{symbol} {user.apple_id}{last}")
-        parent.add(rumps.MenuItem("Sync jetzt", callback=partial(self._sync_one, user.apple_id)))
         excl = f"  ·  Ausschlüsse: {len(user.drive_excludes)}" if user.drive_excludes else ""
-        info = rumps.MenuItem(f"Dienste: {user_services_summary(user)}  ·  "
-                              f"Ziel: {user.dest_base_path or '—'}{excl}")
-        info.set_callback(None)  # nur Info, nicht klickbar
-        parent.add(info)
+        children: list = [
+            MenuEntry("Sync jetzt", partial(self._sync_one, user.apple_id)),
+            # Info-Zeilen ohne Callback sind automatisch nicht klickbar.
+            MenuEntry(f"Dienste: {user_services_summary(user)}  ·  "
+                      f"Ziel: {user.dest_base_path or '—'}{excl}"),
+        ]
         # Bei Fehler/Re-Auth den letzten Grund als nicht-klickbare Info-Zeile zeigen.
         if user.status in (UserStatus.ERROR, UserStatus.NEEDS_REAUTH) and user.last_error:
             reason = user.last_error if len(user.last_error) <= 80 else user.last_error[:77] + "…"
-            err = rumps.MenuItem(f"⚠️ Letzter Fehler: {reason}")
-            err.set_callback(None)
-            parent.add(err)
-        self._user_items[user.apple_id] = parent
-        return parent
+            children.append(MenuEntry(f"⚠️ Letzter Fehler: {reason}"))
+        return MenuEntry(f"{symbol} {user.apple_id}{last}", children=children,
+                         key=user.apple_id)
 
     def _open_prefs(self, _sender=None) -> None:
         """Öffnet das native Einstellungs-Fenster (lazy erzeugt, danach wiederverwendet)."""
@@ -287,9 +293,6 @@ class SyncApp(rumps.App):
         self._icon_active = icons.get("active")
         self._icon_idle = icons.get("idle")
         self._has_icon = bool(self._icon_active and self._icon_idle)
-        self._current_icon: Optional[str] = None
-        if self._has_icon:
-            self.template = True  # System tönt hell/dunkel und skaliert auf Menüleistenhöhe
         self._update_icon()
 
     def _update_icon(self) -> None:
@@ -298,14 +301,13 @@ class SyncApp(rumps.App):
         )
         if self._has_icon:
             # Gefüllt = Auto-Sync aktiv, umrandet = pausiert; Aufmerksamkeit als Badge daneben.
-            desired = self._icon_idle if self.settings.auto_sync_paused else self._icon_active
-            if desired != self._current_icon:
-                self.icon = desired
-                self._current_icon = desired
-            self.title = " 🔴" if attention else ""
+            # set_icon/set_title sind No-ops bei Gleichstand (kein Flackern).
+            self._status.set_icon(self._icon_idle if self.settings.auto_sync_paused
+                                  else self._icon_active)
+            self._status.set_title(" 🔴" if attention else "")
         else:
             base = ICON_ATTENTION if attention else ICON_OK
-            self.title = (base + " ⏸") if self.settings.auto_sync_paused else base
+            self._status.set_title((base + " ⏸") if self.settings.auto_sync_paused else base)
 
     @staticmethod
     def _fmt_last_run(iso: Optional[str]) -> str:
@@ -332,10 +334,14 @@ class SyncApp(rumps.App):
                 ws.openFile_(str(logs_dir()))  # Datei noch nicht da -> Ordner öffnen
         except Exception:  # noqa: BLE001
             LOGGER.exception("Log konnte nicht im Finder angezeigt werden")
-            rumps.alert("Log", f"Log-Datei:\n{log_path}")
+            ui_appkit.alert("Log", f"Log-Datei:\n{log_path}")
 
-    def _quit(self, _sender) -> None:
-        rumps.quit_application()
+    def _quit(self) -> None:
+        import AppKit
+
+        self.timer.stop()
+        self.ui_timer.stop()
+        AppKit.NSApplication.sharedApplication().terminate_(None)
 
     # -- Auto-Sync pausieren/fortsetzen --------------------------------------
 
@@ -376,7 +382,7 @@ class SyncApp(rumps.App):
 
     # -- Sync-Anstoß ---------------------------------------------------------
 
-    def _sync_all(self, _sender) -> None:
+    def _sync_all(self) -> None:
         self._spawn(self._run_sync_all)
 
     def _sync_one(self, apple_id: str, _sender=None) -> None:
@@ -398,17 +404,17 @@ class SyncApp(rumps.App):
         """Callback aus dem Sync-Thread: aktuelle Zähler je User/Phase ablegen (nur Daten)."""
         self._progress.setdefault(apple_id, {})[phase] = counts
 
-    def _ui_tick(self, _timer) -> None:
+    def _ui_tick(self) -> None:
         """Schneller UI-Refresh: Spinner + Live-Counts, solange ein User läuft."""
         running = [u for u in self.store.list() if u.status == UserStatus.RUNNING]
         if running:
             self._spin = (self._spin + 1) % len(SPINNER)
             frame = SPINNER[self._spin]
-            self.title = f" {frame}" if self._has_icon else f"{ICON_OK} {frame}"
+            self._status.set_title(f" {frame}" if self._has_icon else f"{ICON_OK} {frame}")
             for u in running:
-                item = self._user_items.get(u.apple_id)
-                if item is not None:
-                    item.title = self._running_label(u.apple_id)
+                # Titel in place ändern statt Menü neu bauen (sekündlich, ggf. bei
+                # geöffnetem Menü) — siehe statusitem.set_item_title.
+                self._status.set_item_title(u.apple_id, self._running_label(u.apple_id))
             self._was_running = True
         elif self._was_running:
             # Lauf gerade beendet -> Endzustand sauber rendern.
@@ -440,11 +446,12 @@ class SyncApp(rumps.App):
         """True während der Gnadenfrist nach App-Start (Netz/DNS nach Reboot noch nicht oben)."""
         return (time.monotonic() - self._started) < self.settings.startup_delay_seconds
 
-    def _tick(self, _timer) -> None:
+    def _tick(self) -> None:
         """Periodischer Check: fällige User syncen (mit Catch-up) und UI auffrischen.
 
-        rumps-Timer feuern sofort beim Start; in der Start-Gnadenfrist daher noch nicht
-        synchronisieren (sonst läuft der erste Versuch nach einem Reboot ins tote Netz).
+        Der Timer feuert sofort beim Start (``fire_immediately``); in der Start-Gnadenfrist
+        daher noch nicht synchronisieren (sonst läuft der erste Versuch nach einem Reboot
+        ins tote Netz).
         """
         if self._in_startup_grace():
             self._rebuild_menu()
@@ -569,9 +576,21 @@ def _setup_logging() -> None:
 
 
 def main() -> None:
+    """Startet die Menüleisten-App und übergibt an den AppKit-Runloop."""
+    import AppKit
+
     _setup_logging()
     LOGGER.info("iCloud Sync startet (Log: %s)", logs_dir() / "icloud-sync.log")
-    SyncApp().run()
+
+    ns_app = AppKit.NSApplication.sharedApplication()
+    # „Accessory": Menüleisten-Resident ohne Dock-Icon und ohne Hauptmenü. Entspricht
+    # LSUIElement aus der Info.plist, gilt aber auch im Dev-Modus ohne Bundle.
+    ns_app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+
+    app = SyncApp()  # Referenz halten: Status-Item und Timer hängen daran
+    LOGGER.info("Menüleisten-Item aktiv, Runloop startet.")
+    ns_app.run()
+    LOGGER.info("Runloop beendet (%r).", app.__class__.__name__)
 
 
 if __name__ == "__main__":

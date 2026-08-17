@@ -2,7 +2,10 @@
 # Exakt gepinnt (Supply-Chain/Reproduzierbarkeit). Für vollständige Absicherung auch der
 # transitiven Abhängigkeiten zusätzlich ein Lockfile mit Hashes erwägen
 # (z. B. `.venv/bin/pip freeze > requirements.lock` bzw. `pip install --require-hashes`).
-rumps==0.4.0          # Menüleisten-UI (Status-Bar, Popover, Notifications)
+#
+# Die UI ist vollständig pyobjc/AppKit — rumps (Menüleiste/Timer/Notifications) und
+# pync (Notification-Fallback) sind mit der Umstellung entfallen.
+pyobjc-framework-Cocoa==12.2.2               # AppKit/Foundation: Statusleiste, Menü, Fenster, Timer
+pyobjc-framework-UserNotifications==12.2.2   # macOS-Notifications
 pyicloud==2.6.4       # gepflegter Fork (timlaing/pyicloud): iCloud Drive + Photos + 2FA/Trust
 keyring==25.7.0       # Credentials im macOS-Keychain
-pync==2.0.3           # Fallback für macOS-Notifications (terminal-notifier)

@@ -18,10 +18,55 @@ _NS_ALERT_FIRST_BUTTON = 1000  # NSAlertFirstButtonReturn
 
 
 def run_on_main(fn: Callable, *args) -> None:
-    """Führt ``fn(*args)`` auf dem Main-Thread aus (AppKit-Updates müssen dort laufen)."""
+    """Führt ``fn(*args)`` **asynchron** auf dem Main-Thread aus (feuern und vergessen).
+
+    Für UI-Updates aus Hintergrund-Threads, bei denen niemand auf ein Ergebnis wartet.
+    Wer eine Rückgabe oder eine deterministische Reihenfolge braucht, nimmt
+    :func:`run_on_main_sync`.
+    """
     from PyObjCTools import AppHelper
 
     AppHelper.callAfter(fn, *args)
+
+
+def is_main_thread() -> bool:
+    """True, wenn der aufrufende Thread der AppKit-Main-Thread ist."""
+    from Foundation import NSThread
+
+    return bool(NSThread.isMainThread())
+
+
+def run_on_main_sync(fn: Callable):
+    """Führt ``fn()`` **synchron** auf dem Main-Thread aus; reicht Rückgabe/Fehler durch.
+
+    Auf dem Main-Thread direkt (kein Dispatch, keine Deadlock-Gefahr); sonst über die
+    Main-Operation-Queue und per :class:`threading.Event` auf das Ergebnis warten.
+    Genutzt von :mod:`src.statusitem` und :mod:`src.timers`, die AppKit-Objekte anfassen
+    und dabei eine definierte Reihenfolge brauchen (z. B. Menü ersetzen).
+    """
+    import threading
+
+    from Foundation import NSOperationQueue, NSThread
+
+    if NSThread.isMainThread():
+        return fn()
+
+    box: dict = {}
+    done = threading.Event()
+
+    def _wrapper() -> None:
+        try:
+            box["value"] = fn()
+        except Exception as exc:  # noqa: BLE001 - auf den Aufrufer-Thread weiterreichen
+            box["error"] = exc
+        finally:
+            done.set()
+
+    NSOperationQueue.mainQueue().addOperationWithBlock_(_wrapper)
+    done.wait()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 def activate_app() -> None:
