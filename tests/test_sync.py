@@ -656,6 +656,24 @@ def test_engine_all_services():
     check(os.path.exists(os.path.join(dest, "Mail", "INBOX", "1.eml")), "engine: Mail-Datei")
 
 
+def test_needs_web_login():
+    """Nur Drive/Photos brauchen den 2FA-pflichtigen Web-Login; Contacts/Mail nicht."""
+    only_contacts_mail = User(apple_id="a@example.com", sync_drive=False, sync_photos=False,
+                              sync_contacts=True, sync_mail=True)
+    check(engine.needs_web_login(only_contacts_mail) is False,
+          "needs_web_login: False ohne Drive/Photos")
+
+    with_drive = User(apple_id="b@example.com", sync_drive=True, sync_photos=False)
+    check(engine.needs_web_login(with_drive) is True, "needs_web_login: True mit Drive")
+
+    with_photos = User(apple_id="c@example.com", sync_drive=False, sync_photos=True)
+    check(engine.needs_web_login(with_photos) is True, "needs_web_login: True mit Photos")
+
+    nothing = User(apple_id="d@example.com", sync_drive=False, sync_photos=False,
+                   sync_contacts=False, sync_mail=False)
+    check(engine.needs_web_login(nothing) is False, "needs_web_login: False ganz ohne Dienste")
+
+
 def test_engine_mail_independent_of_web():
     """Mail läuft, auch wenn die Web-Session 2FA braucht."""
     dest = tempfile.mkdtemp(prefix="engineindep_")
@@ -1092,6 +1110,7 @@ if __name__ == "__main__":
     test_mail_sets_mtime_from_internaldate()
     test_session_dir_perms()
     test_engine_all_services()
+    test_needs_web_login()
     test_engine_mail_independent_of_web()
     test_engine_mount_missing()
     test_engine_records_last_error()

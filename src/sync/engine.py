@@ -62,6 +62,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def needs_web_login(user: User) -> bool:
+    """True, wenn der Account den 2FA-pflichtigen Web-Login braucht (Drive/Photos).
+
+    Contacts (CardDAV) und Mail (IMAP) laufen mit dem app-spezifischen Passwort
+    unabhängig davon — ein Account ohne Drive/Photos hat mit dem Web-Login-Status
+    (und damit auch mit "Re-Auth nötig") nichts zu tun.
+    """
+    return user.sync_drive or user.sync_photos
+
+
 def _check_free_space(dest_base_path: str) -> None:
     """Loggt eine Warnung bei wenig freiem Speicher (Fallstrick #6)."""
     try:
@@ -128,7 +138,7 @@ def run_user(user: User, store: Optional[UsersStore] = None, progress_cb=None) -
     web_reauth = False
 
     # 2) Web-API (Drive/Photos) – nur wenn benötigt. Contacts/Mail laufen davon unabhängig.
-    if user.sync_drive or user.sync_photos:
+    if needs_web_login(user):
         password = keychain.get_password(user.apple_id)
         if not password:
             msg = "Kein Apple-ID-Passwort im Keychain (Drive/Photos)"

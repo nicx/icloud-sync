@@ -510,6 +510,8 @@ class SyncApp:
         for user in self.store.list():
             if user.status == UserStatus.RUNNING:
                 continue
+            if not engine.needs_web_login(user):
+                continue
             password = keychain.get_password(user.apple_id)
             status = session.check_session(user.apple_id, password)
             self.store.set_status(user.apple_id, status)
